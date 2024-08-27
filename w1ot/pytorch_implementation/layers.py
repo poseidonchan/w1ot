@@ -56,6 +56,8 @@ class LBlayer(nn.Linear):
         else:
             raise ValueError("Activation must be 'relu', 'celu', or 'id'")
 
+
+
     def forward(self, x):
         fout, _ = self.weight.shape
         if self.training or self.Q is None:
@@ -69,30 +71,6 @@ class LBlayer(nn.Linear):
         x = self.activation(x) * torch.exp(self.psi)  # \Psi z
         x = 2 ** 0.5 * F.linear(x, Q[:, :fout].T)  # sqrt(2) A^top \Psi z
         return x
-
-    def check_lipschitz(self, num_samples=1000, epsilon=1e-6):
-        self.eval()  # Set the model to evaluation mode
-        with torch.no_grad():
-            # Generate random input pairs
-            x1 = torch.randn(num_samples, self.in_features)
-            x2 = x1 + epsilon * torch.randn(num_samples, self.in_features)
-
-            # Compute outputs
-            y1 = self(x1)
-            y2 = self(x2)
-
-            # Compute Lipschitz constants
-            input_distances = torch.norm(x1 - x2, dim=1)
-            output_distances = torch.norm(y1 - y2, dim=1)
-            lipschitz_constants = output_distances / input_distances
-
-            max_lipschitz = lipschitz_constants.max().item()
-            is_1_lipschitz = max_lipschitz <= self.scale + 1e-5  # Allow for small numerical errors
-
-            print(f"Max Lipschitz constant: {max_lipschitz}")
-            print(f"Is 1-Lipschitz: {is_1_lipschitz}")
-
-            return is_1_lipschitz, max_lipschitz
 
 
 class PLBlayer(nn.Module):
@@ -160,43 +138,4 @@ class PLBlayer(nn.Module):
 
         return h, u
 
-    def check_lipschitz(self, num_samples=100000, epsilon=1e-6):
-        self.eval()
-        with torch.no_grad():
-            # Check Lipschitz w.r.t x
-            x1 = torch.randn(num_samples, self.in_features)
-            x2 = x1 + epsilon * torch.randn(num_samples, self.in_features)
-            y = torch.randn(num_samples, self.u_features)  # Same y for both x1 and x2
-
-            y1_x = self(x1, y)[0]
-            y2_x = self(x2, y)[0]
-
-            input_distances_x = torch.norm(x1 - x2, dim=1)
-            output_distances_x = torch.norm(y1_x - y2_x, dim=1)
-            lipschitz_constants_x = output_distances_x / input_distances_x
-
-            max_lipschitz_x = lipschitz_constants_x.max().item()
-            is_1_lipschitz_x = max_lipschitz_x <= self.scale + 1e-5
-
-            # Check Lipschitz w.r.t y
-            x = torch.randn(num_samples, self.in_features)  # Same x for both y1 and y2
-            y1 = torch.randn(num_samples, self.u_features)
-            y2 = y1 + epsilon * torch.randn(num_samples, self.u_features)
-
-            y1_y = self(x, y1)[1]
-            y2_y = self(x, y2)[1]
-
-            input_distances_y = torch.norm(y1 - y2, dim=1)
-            output_distances_y = torch.norm(y1_y - y2_y, dim=1)
-            lipschitz_constants_y = output_distances_y / input_distances_y
-
-            max_lipschitz_y = lipschitz_constants_y.max().item()
-            is_1_lipschitz_y = max_lipschitz_y <= self.scale + 1e-5
-
-            print(f"Max Lipschitz constant w.r.t x: {max_lipschitz_x}")
-            print(f"Is 1-Lipschitz w.r.t x: {is_1_lipschitz_x}")
-            print(f"Max Lipschitz constant w.r.t y: {max_lipschitz_y}")
-            print(f"Is 1-Lipschitz w.r.t y: {is_1_lipschitz_y}")
-
-            return (is_1_lipschitz_x, max_lipschitz_x), (is_1_lipschitz_y, max_lipschitz_y)
 

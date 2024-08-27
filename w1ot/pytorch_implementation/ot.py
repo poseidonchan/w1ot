@@ -1,11 +1,20 @@
 import torch
+import random
 import numpy as np
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from typing import Dict, Any
 
-from .models import LBNN, DNN, PLBNN
+from .models import LBNN, DNN
+
+def reproducibility(seed=1):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
 
 
 class w1ot:
@@ -72,15 +81,15 @@ class w1ot:
             return data[shuffle_indices]
 
     def maximize_potential(self,
-                           phi_network_opt: Dict[str, Any] =  {"hidden_sizes": [32, 32, 32, 32],
+                           phi_network_opt: Dict[str, Any] =  {"hidden_sizes": [256]*3,
                                                                "activation": "relu",
-                                                               "scale": 1.0},
+                                                               "scale": 1},
                            batch_size: int = None,
                            num_epochs: int = 200,
                            lr_init: float = 1e-2,
                            lr_min: float = 1e-4,
                            optimizer: str = 'adam') -> None:
-
+        reproducibility()
         self.phi = LBNN(input_size=self.p, output_size=1, **phi_network_opt).to(self.device)
         print("the optimizer is: ", optimizer)
         if optimizer.lower() == 'lbfgs':
@@ -106,23 +115,25 @@ class w1ot:
         """
         # Optimizer
         if optimizer.lower() == 'adam':
-            optimizer_phi = optim.Adam(self.phi.parameters(), betas=(0.5, 0.9), lr=lr)
+            optimizer_phi = optim.Adam(self.phi.parameters(), betas=(0.6, 0.5), lr=lr, maximize=True)
         elif optimizer.lower() == 'rmsprop':
-            optimizer_phi = optim.RMSprop(self.phi.parameters(), lr=lr)
+            optimizer_phi = optim.RMSprop(self.phi.parameters(), lr=lr, maximize=True)
         elif optimizer.lower() == 'sgd':
-            optimizer_phi = optim.SGD(self.phi.parameters(), lr=lr)
+            optimizer_phi = optim.SGD(self.phi.parameters(), lr=lr, maximize=True)
         else:
             raise ValueError("Optimizer must be 'sgd', 'adam', or 'rmsprop'.")
 
         # Initialize the cosine annealing scheduler
-        scheduler = CosineAnnealingLR(optimizer_phi, T_max=num_epochs, eta_min=lr_min)
+        scheduler = CosineAnnealingLR(optimizer_phi, T_max=num_epochs*int(len(self.source_train)/batch_size), eta_min=lr_min)
 
         for epoch in range(num_epochs):
             self.phi.train()
             train_loss = 0
             num_batches = 0
 
+            reproducibility(epoch)
             self.source_train, _ = self.shuffle_data(self.source_train)
+            reproducibility(epoch)
             self.target_train, _ = self.shuffle_data(self.target_train)
 
             for i in range(0, len(self.source_train), batch_size):
@@ -134,11 +145,29 @@ class w1ot:
                     break
 
                 optimizer_phi.zero_grad()
-                loss = -((self.phi(source_batch).mean() - self.phi(target_batch).mean()))
+                loss = (self.phi(source_batch).mean() - self.phi(target_batch).mean())
                 loss.backward()
+
+                # Calculate the gradient norm of the first layer
+                first_layer = next(self.phi.parameters())
+                first_layer_grad_norm = first_layer.grad.norm().item()
+
+                # Calculate the gradient norm of the last layer
+                for name, param in self.phi.named_parameters():
+                    if name == "layers.10.weight":
+                        last_layer_grad_norm = param.grad.norm().item()
+                    elif name =='layers.0.weight':
+                        first_layer_grad_norm = param.grad.norm().item()
+
+                # print(
+                #     f"Epoch {epoch}, Batch {num_batches}: First Layer Gradient Norm: {first_layer_grad_norm:.4f}, Last Layer Gradient Norm: {last_layer_grad_norm:.4f}")
+
                 optimizer_phi.step()
                 train_loss += loss.item()
                 num_batches += 1
+
+                scheduler.step()
+
 
             train_loss /= num_batches
 
@@ -148,13 +177,13 @@ class w1ot:
             else:
                 self.phi.eval()
                 with torch.no_grad():
-                    val_loss = -((self.phi(self.source_val).mean() - self.phi(self.target_val).mean()))
+                    val_loss = (self.phi(self.source_val).mean() - self.phi(self.target_val).mean())
 
-            # Step the scheduler
-            scheduler.step()
+
 
             current_lr = scheduler.get_last_lr()[0]
             print(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
+
 
     def maximize_potential_lbfgs(self, batch_size: int, num_epochs: int, lr: float, lr_min: float = 1e-3) -> None:
         """
@@ -203,9 +232,9 @@ class w1ot:
             print(f"Epoch {epoch}: Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
 
     def fit_distance_function(self,
-                              d_network_opt: Dict[str, Any] = {'hidden_sizes': [32, 32, 32, 32],
+                              d_network_opt: Dict[str, Any] = {'hidden_sizes': [256]*3,
                                                                'final_activation': 'sigmoid'},
-                              alpha_network_opt: Dict[str, Any] = {'hidden_sizes': [32, 32, 32, 32],
+                              alpha_network_opt: Dict[str, Any] = {'hidden_sizes': [256]*3,
                                                                    'final_activation': 'softplus'},
                               batch_size: int = 64,
                               num_epochs: int = 1000,
@@ -237,8 +266,8 @@ class w1ot:
         else:
             raise ValueError("Optimizer must be 'adam' or 'rmsprop'")
 
-        scheduler_D = CosineAnnealingLR(optimizer_D, T_max=num_epochs, eta_min=lr_min)
-        scheduler_alpha = CosineAnnealingLR(optimizer_alpha, T_max=num_epochs, eta_min=lr_min)
+        scheduler_D = CosineAnnealingLR(optimizer_D, T_max=num_epochs*int(len(self.source_train)/batch_size), eta_min=lr_min)
+        scheduler_alpha = CosineAnnealingLR(optimizer_alpha, T_max=num_epochs*int(len(self.source_train)/batch_size), eta_min=lr_min)
 
         for epoch in range(num_epochs):
             self.alpha.train()
@@ -286,16 +315,17 @@ class w1ot:
                 generator_loss.backward()
                 optimizer_alpha.step()
 
+                scheduler_D.step()
+                scheduler_alpha.step()
+
                 total_discriminator_loss += discriminator_loss.item()
                 total_generator_loss += generator_loss.item()
                 total_train_loss += generator_loss.item()
                 num_batches += 1
+
             avg_train_loss = total_train_loss / num_batches
             avg_discriminator_loss = total_discriminator_loss / num_batches
             avg_generator_loss = total_generator_loss / num_batches
-
-            scheduler_D.step()
-            scheduler_alpha.step()
 
             print(f"Epoch {epoch}: "
                   f"Train Loss: {avg_train_loss:.4f}, "
@@ -357,10 +387,10 @@ class w1ot:
         import matplotlib.pyplot as plt
 
         # make the plot range is suitable with source data and target data
-        x_range = (min(self.source[:, 0].min().item(), self.target[:, 0].min().item())-1,
-                   max(self.source[:, 0].max().item(), self.target[:, 0].max().item())+1)
-        y_range = (min(self.source[:, 1].min().item(), self.target[:, 1].min().item()-1),
-                   max(self.source[:, 1].max().item(), self.target[:, 1].max().item())+1)
+        x_range = (min(self.source[:, 0].min().item(), self.target[:, 0].min().item())-0.1,
+                   max(self.source[:, 0].max().item(), self.target[:, 0].max().item())+0.1)
+        y_range = (min(self.source[:, 1].min().item(), self.target[:, 1].min().item()-0.1),
+                   max(self.source[:, 1].max().item(), self.target[:, 1].max().item())+0.1)
 
         x = np.linspace(x_range[0], x_range[1], resolution)
         y = np.linspace(y_range[0], y_range[1], resolution)

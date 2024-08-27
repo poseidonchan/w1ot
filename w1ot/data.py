@@ -63,7 +63,7 @@ def make_2d_data(dataset='circles',
             return source_data, target_data
 
     elif dataset == 'moons' or dataset == 'moons_r':
-        X, y = make_moons(n_samples=n_samples, noise=noise)
+        X, y = make_moons(n_samples=n_samples, noise=noise, random_state=1)
         source = X[y == 0]
         target = X[y == 1]
         if dataset == 'moon_r':
@@ -83,8 +83,8 @@ def make_2d_data(dataset='circles',
     elif dataset == 'swiss_roll':
         source = generate_gaussian(n_samples, [0, 0], [[1, 0], [0, 1]])
         X, _ = make_swiss_roll(n_samples=n_samples, noise=noise)
-        target = X[:, [0, 2]]
-        return source, target
+        target = X[:, [0, 2]]/4
+        return source/2, target
 
     elif dataset == 's_curve':
         source = generate_gaussian(n_samples, [0, 0], [[0.05, 0], [0, 0.05]])

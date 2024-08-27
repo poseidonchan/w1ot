@@ -1,9 +1,8 @@
 import torch.nn as nn
+import numpy as np
 from .layers import LBlinear, LBlayer, PLBlayer
-
-
 class LBNN(nn.Module):
-    def __init__(self, input_size, output_size, hidden_sizes, activation='relu', scale=1.0):
+    def __init__(self, input_size, output_size, hidden_sizes, activation='relu', final_activation=None, scale=1.0):
         super().__init__()
 
         self.input_size = input_size
@@ -13,11 +12,18 @@ class LBNN(nn.Module):
         # Create layers
         layers = []
         prev_size = input_size
-        for hidden_size in hidden_sizes:
-            layers.append(LBlayer(prev_size, hidden_size, scale=scale, activation=activation))
+        for i, hidden_size in enumerate(hidden_sizes):
+            if i == 0:
+                layers.append(LBlayer(prev_size, hidden_size, scale=np.sqrt(scale), activation=activation))
+            else:
+                layers.append(LBlayer(prev_size, hidden_size, scale=1, activation=activation))
             prev_size = hidden_size
 
-        layers.append(LBlinear(prev_size, output_size, scale=scale))
+        layers.append(LBlinear(prev_size, output_size, scale=np.sqrt(scale)))
+
+        if final_activation == 'softplus':
+            layers.append(nn.Softplus())
+
 
         self.layers = nn.ModuleList(layers)
 
