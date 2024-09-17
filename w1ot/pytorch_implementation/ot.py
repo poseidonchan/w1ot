@@ -99,13 +99,13 @@ class w1ot:
 
     def fit_potential_function(self,
                            hidden_sizes: List[int] = [64]*4,
-                           orthornormal_layer: str = 'bjorck',
+                           orthornormal_layer: str = 'cayley',
                            groups: int = 2,
                            batch_size: int = 256,
                            num_iters: int = 10000,
                            lr_init: float = 1e-3,
                            lr_min: float = 1e-5,
-                           betas: Tuple[float, float] = (0.5, 0.9),
+                           betas: Tuple[float, float] = (0.5, 0.5),
                            checkpoint_interval: int = 1000,
                            resume_from_checkpoint: bool = True) -> None:
         reproducibility()
