@@ -16,7 +16,7 @@ def make_2d_data(dataset='circles',
                  noise=0.01):
 
     if dataset == '8gaussians' or dataset == '8gaussians_r':
-        n_samples_per_cluster = int(n_samples/8)  # 100,000 / 8 for outer clusters
+        n_samples_per_cluster = int(n_samples/8)
         n_clusters = 8
         radius = 5
         center_cov = [[0.1, 0], [0, 0.1]]
@@ -43,7 +43,9 @@ def make_2d_data(dataset='circles',
 
     elif dataset == 'checkerboard' or dataset == 'checkerboard_r':
         # Parameters
-        num_samples = int(n_samples/9)  # Number of samples per distribution
+        num_samples = int(n_samples / 2)  # Number of samples per distribution
+        source_samples = int(num_samples / 5)
+        target_samples = int(num_samples / 4)
         cov = [[0.1, 0], [0, 0.1]]  # Covariance matrix (small spread)
         k = 3
         # Define the centers of the 5 source and 4 target Gaussian distributions
@@ -55,9 +57,9 @@ def make_2d_data(dataset='circles',
         ]
 
         # Generate source data
-        source_data = [generate_gaussian(num_samples, mean, cov) for mean in source_means]
+        source_data = [generate_gaussian(source_samples, mean, cov) for mean in source_means]
         # Generate target data
-        target_data = [generate_gaussian(num_samples, mean, cov) for mean in target_means]
+        target_data = [generate_gaussian(target_samples, mean, cov) for mean in target_means]
 
         # transform to the numpy array
         source_data = np.vstack(source_data)
@@ -119,278 +121,198 @@ def plot_2d_data(source, target, transported=None, transport_ray_size=1, title=N
     plt.tight_layout()
     plt.show()
 
-import anndata
-import pandas as pd
-from pathlib import Path
-from sklearn.model_selection import train_test_split
+# ## below is the data reading code borrowed from cellot to follow the same data split and configuration
+# ## cellot: https://github.com/bunnech/cellot/blob/main/scripts/train.py
+
+# import anndata
+# import pandas as pd
+# from pathlib import Path
+# from sklearn.model_selection import train_test_split
+# from absl import flags
+# from ml_collections import ConfigDict
+# import yaml
+# import re
+# import string
+
+# def load_config(path, unparsed=None):
+
+#     path = Path(path)
+
+#     if path.exists():
+#         config = ConfigDict(yaml.load(open(path, "r"), yaml.SafeLoader))
+#     else:
+#         print("WARNING: config path not found")
+#         config = ConfigDict()
+
+#     if unparsed is not None:
+#         opts = parse_cli_opts(unparsed)
+#         config.update(opts)
+
+#     return config
+
+
+# def read_list(arg):
+
+#     if isinstance(arg, str):
+#         arg = Path(arg)
+#         assert arg.exists()
+#         lst = arg.read_text().split()
+#     else:
+#         lst = arg
+
+#     return list(lst)
+
+# def read_single_anndata(config, path=None):
+#     if path is None:
+#         path = config.data.path
+
+#     data = anndata.read(path)
+
+#     if "features" in config.data:
+#         features = read_list(config.data.features)
+#         data = data[:, features].copy()
+
+#     # select subgroup of individuals
+#     if "individuals" in config.data:
+#         data = data[
+#             data.obs[config.data.individuals[0]].isin(config.data.individuals[1])
+#         ]
 
+#     # label conditions as source/target distributions
+#     # config.data.{source,target} can be a list now
+#     transport_mapper = dict()
+#     for value in ["source", "target"]:
+#         key = config.data[value]
+#         if isinstance(key, list):
+#             for item in key:
+#                 transport_mapper[item] = value
+#         else:
+#             transport_mapper[key] = value
 
-## below is the data reading code borrowed from cellot to follow the same data split and configuration
-## cellot: http://localhost:2023/lab/tree/Desktop/cellot/cellot/data/cell.py
+#     data.obs["transport"] = data.obs[config.data.condition].apply(transport_mapper.get)
 
+#     if config.data["target"] == "all":
+#         data.obs["transport"].fillna("target", inplace=True)
 
+#     mask = data.obs["transport"].notna()
+#     assert "subset" not in config.data
+#     if "subset" in config.datasplit:
+#         for key, value in config.datasplit.subset.items():
+#             if not isinstance(value, list):
+#                 value = [value]
+#             mask = mask & data.obs[key].isin(value)
 
+#     # write train/test/valid into split column
+#     data = data[mask].copy()
+#     if "datasplit" in config:
+#         data.obs["split"] = split_cell_data(data, **config.datasplit)
 
+#     return data
 
+# def split_cell_data_train_test(
+#     data, groupby=None, random_state=0, holdout=None, subset=None, **kwargs
+# ):
 
-from absl import flags
-from ml_collections import ConfigDict
-import yaml
-import re
-import string
+#     split = pd.Series(None, index=data.obs.index, dtype=object)
+#     groups = {None: data.obs.index}
+#     if groupby is not None:
+#         groups = data.obs.groupby(groupby).groups
 
-ALPHABET = string.ascii_lowercase + string.digits
+#     for key, index in groups.items():
+#         trainobs, testobs = train_test_split(index, random_state=random_state, **kwargs)
+#         split.loc[trainobs] = "train"
+#         split.loc[testobs] = "test"
 
-flags.DEFINE_string("outroot", "./results", "Root directory to write model output")
+#     if holdout is not None:
+#         for key, value in holdout.items():
+#             if not isinstance(value, list):
+#                 value = [value]
+#             split.loc[data.obs[key].isin(value)] = "ood"
 
-flags.DEFINE_string("model_name", "", "Name of model class")
+#     return split
 
-flags.DEFINE_string("data_name", "", "Name of dataset")
 
-flags.DEFINE_string("preproc_name", "", "Name of dataset")
+# def split_cell_data_train_test_eval(
+#     data,
+#     test_size=0.15,
+#     eval_size=0.15,
+#     groupby=None,
+#     random_state=0,
+#     holdout=None,
+#     **kwargs
+# ):
 
-flags.DEFINE_string("experiment_name", "", "Name for experiment")
+#     split = pd.Series(None, index=data.obs.index, dtype=object)
 
-flags.DEFINE_string("submission_id", "", "UUID generated by bash script submitting job")
+#     if holdout is not None:
+#         for key, value in holdout.items():
+#             if not isinstance(value, list):
+#                 value = [value]
+#             split.loc[data.obs[key].isin(value)] = "ood"
 
-flags.DEFINE_string(
-    "drug", "", "Compute OT map on drug, change outdir to outdir/drugs/drug"
-)
+#     groups = {None: data.obs.loc[split != "ood"].index}
+#     if groupby is not None:
+#         groups = data.obs.loc[split != "ood"].groupby(groupby).groups
 
-flags.DEFINE_string("celldata", "", "Short cut to specify config.data.path & outdir")
+#     for key, index in groups.items():
+#         training, evalobs = train_test_split(
+#             index, random_state=random_state, test_size=eval_size
+#         )
 
-flags.DEFINE_string("outdir", "", "Path to outdir")
+#         trainobs, testobs = train_test_split(
+#             training, random_state=random_state, test_size=test_size
+#         )
 
-FLAGS = flags.FLAGS
+#         split.loc[trainobs] = "train"
+#         split.loc[testobs] = "test"
+#         split.loc[evalobs] = "eval"
 
-def load_config(path, unparsed=None):
+#     return split
 
-    path = Path(path)
 
-    if path.exists():
-        config = ConfigDict(yaml.load(open(path, "r"), yaml.SafeLoader))
-    else:
-        print("WARNING: config path not found")
-        config = ConfigDict()
+# def split_cell_data_toggle_ood(data, holdout, key, mode, random_state=0, **kwargs):
 
-    if unparsed is not None:
-        opts = parse_cli_opts(unparsed)
-        config.update(opts)
+#     """Hold out ood sample, coordinated with iid split
 
-    return config
+#     ood sample defined with key, value pair
 
-def parse_cli_opts(args):
-    def parse(argiter):
-        for opt in argiter:
-            if "=" not in opt:
-                value = next(argiter)
-                key = re.match(r"^--config\.(?P<key>.*)", opt)["key"]
+#     for ood mode: hold out all cells from a sample
+#     for iid mode: include half of cells in split
+#     """
 
-            else:
-                match = re.match(r"^--config\.(?P<key>.*)=(?P<value>.*)", opt)
-                key, value = match["key"], match["value"]
+#     split = split_cell_data_train_test(data, random_state=random_state, **kwargs)
 
-            value = yaml.load(value, Loader=yaml.UnsafeLoader)
-            yield key, value
+#     if not isinstance(holdout, list):
+#         value = [holdout]
 
-    opts = dict()
-    if len(args) == 0:
-        return opts
+#     ood = data.obs_names[data.obs[key].isin(value)]
+#     trainobs, testobs = train_test_split(ood, random_state=random_state, test_size=0.5)
 
-    argiter = iter(args)
-    for key, val in parse(argiter):
-        *tree, leaf = key.split(".")
-        lut = opts
-        for k in tree:
-            lut = lut.setdefault(k, dict())
-        lut[leaf] = val
+#     if mode == "ood":
+#         split.loc[trainobs] = "ignore"
+#         split.loc[testobs] = "ood"
 
-    return opts
+#     elif mode == "iid":
+#         split.loc[trainobs] = "train"
+#         split.loc[testobs] = "ood"
 
-def parse_config_cli(path, args):
-    if isinstance(path, list):
-        config = ConfigDict()
-        for path in FLAGS.config:
-            config.update(yaml.load(open(path), Loader=yaml.UnsafeLoader))
-    else:
-        config = load_config(path)
+#     else:
+#         raise ValueError
 
-    opts = parse_cli_opts(args)
-    config.update(opts)
+#     return split
 
-    if len(FLAGS.celldata) > 0:
-        config.data.path = str(FLAGS.celldata)
-        config.data.type = "cell"
-        config.data.source = "control"
-
-    drug = FLAGS.drug
-    if len(drug) > 0:
-        config.data.target = drug
-
-    return config
-
-def read_list(arg):
-
-    if isinstance(arg, str):
-        arg = Path(arg)
-        assert arg.exists()
-        lst = arg.read_text().split()
-    else:
-        lst = arg
-
-    return list(lst)
-
-def read_single_anndata(config, path=None):
-    if path is None:
-        path = config.data.path
-
-    data = anndata.read(path)
-
-    if "features" in config.data:
-        features = read_list(config.data.features)
-        data = data[:, features].copy()
-
-    # select subgroup of individuals
-    if "individuals" in config.data:
-        data = data[
-            data.obs[config.data.individuals[0]].isin(config.data.individuals[1])
-        ]
 
-    # label conditions as source/target distributions
-    # config.data.{source,target} can be a list now
-    transport_mapper = dict()
-    for value in ["source", "target"]:
-        key = config.data[value]
-        if isinstance(key, list):
-            for item in key:
-                transport_mapper[item] = value
-        else:
-            transport_mapper[key] = value
+# def split_cell_data(data, name="train_test", **kwargs):
+#     if name == "train_test":
+#         split = split_cell_data_train_test(data, **kwargs)
+#     elif name == "toggle_ood":
+#         split = split_cell_data_toggle_ood(data, **kwargs)
+#     elif name == "train_test_eval":
+#         split = split_cell_data_train_test_eval(data, **kwargs)
+#     else:
+#         raise ValueError
 
-    data.obs["transport"] = data.obs[config.data.condition].apply(transport_mapper.get)
-
-    if config.data["target"] == "all":
-        data.obs["transport"].fillna("target", inplace=True)
-
-    mask = data.obs["transport"].notna()
-    assert "subset" not in config.data
-    if "subset" in config.datasplit:
-        for key, value in config.datasplit.subset.items():
-            if not isinstance(value, list):
-                value = [value]
-            mask = mask & data.obs[key].isin(value)
-
-    # write train/test/valid into split column
-    data = data[mask].copy()
-    if "datasplit" in config:
-        data.obs["split"] = split_cell_data(data, **config.datasplit)
-
-    return data
-
-def split_cell_data_train_test(
-    data, groupby=None, random_state=0, holdout=None, subset=None, **kwargs
-):
-
-    split = pd.Series(None, index=data.obs.index, dtype=object)
-    groups = {None: data.obs.index}
-    if groupby is not None:
-        groups = data.obs.groupby(groupby).groups
-
-    for key, index in groups.items():
-        trainobs, testobs = train_test_split(index, random_state=random_state, **kwargs)
-        split.loc[trainobs] = "train"
-        split.loc[testobs] = "test"
-
-    if holdout is not None:
-        for key, value in holdout.items():
-            if not isinstance(value, list):
-                value = [value]
-            split.loc[data.obs[key].isin(value)] = "ood"
-
-    return split
-
-
-def split_cell_data_train_test_eval(
-    data,
-    test_size=0.15,
-    eval_size=0.15,
-    groupby=None,
-    random_state=0,
-    holdout=None,
-    **kwargs
-):
-
-    split = pd.Series(None, index=data.obs.index, dtype=object)
-
-    if holdout is not None:
-        for key, value in holdout.items():
-            if not isinstance(value, list):
-                value = [value]
-            split.loc[data.obs[key].isin(value)] = "ood"
-
-    groups = {None: data.obs.loc[split != "ood"].index}
-    if groupby is not None:
-        groups = data.obs.loc[split != "ood"].groupby(groupby).groups
-
-    for key, index in groups.items():
-        training, evalobs = train_test_split(
-            index, random_state=random_state, test_size=eval_size
-        )
-
-        trainobs, testobs = train_test_split(
-            training, random_state=random_state, test_size=test_size
-        )
-
-        split.loc[trainobs] = "train"
-        split.loc[testobs] = "test"
-        split.loc[evalobs] = "eval"
-
-    return split
-
-
-def split_cell_data_toggle_ood(data, holdout, key, mode, random_state=0, **kwargs):
-
-    """Hold out ood sample, coordinated with iid split
-
-    ood sample defined with key, value pair
-
-    for ood mode: hold out all cells from a sample
-    for iid mode: include half of cells in split
-    """
-
-    split = split_cell_data_train_test(data, random_state=random_state, **kwargs)
-
-    if not isinstance(holdout, list):
-        value = [holdout]
-
-    ood = data.obs_names[data.obs[key].isin(value)]
-    trainobs, testobs = train_test_split(ood, random_state=random_state, test_size=0.5)
-
-    if mode == "ood":
-        split.loc[trainobs] = "ignore"
-        split.loc[testobs] = "ood"
-
-    elif mode == "iid":
-        split.loc[trainobs] = "train"
-        split.loc[testobs] = "ood"
-
-    else:
-        raise ValueError
-
-    return split
-
-
-def split_cell_data(data, name="train_test", **kwargs):
-    if name == "train_test":
-        split = split_cell_data_train_test(data, **kwargs)
-    elif name == "toggle_ood":
-        split = split_cell_data_toggle_ood(data, **kwargs)
-    elif name == "train_test_eval":
-        split = split_cell_data_train_test_eval(data, **kwargs)
-    else:
-        raise ValueError
-
-    return split.astype("category")
+#     return split.astype("category")
 
 
 
