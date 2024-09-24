@@ -166,9 +166,8 @@ class w1ot:
                               eta_hidden_sizes: List[int] = [64]*4,
                               batch_size: int = 256,
                               num_iters: int = 10000,
-                              lr_init: float = 1e-3,
+                              lr_init: float = 1e-4,
                               lr_min: float = 1e-5,
-                              betas: Tuple[float, float] = (0.5, 0.9),
                               checkpoint_interval: int = 1000,
                               resume_from_checkpoint: bool = True) -> None:
         reproducibility()
@@ -187,8 +186,8 @@ class w1ot:
         self.network_config['eta'] = self.eta_network_opt
         self.network_config['D'] = self.d_network_opt
        
-        optimizer_D = optim.Adam(self.D.parameters(), lr=lr_init, betas=betas)
-        optimizer_eta = optim.Adam(self.eta.parameters(), lr=lr_init, betas=betas)
+        optimizer_D = optim.RMSprop(self.D.parameters(), lr=lr_init)
+        optimizer_eta = optim.RMSprop(self.eta.parameters(), lr=lr_init)
         
 
         scheduler_D = CosineAnnealingLR(optimizer_D, T_max=num_iters, eta_min=lr_min)
@@ -246,8 +245,8 @@ class w1ot:
             # Generator (Transport) loss: Use log loss to fool the discriminator
             D_fake = self.D(transported_batch)  # Recompute D_fake for the generator
             generator_loss = - torch.mean(torch.log(D_fake + 1e-6))
-
-            # Update the alpha network
+            
+            # Update the distance function
             generator_loss.backward()
             optimizer_eta.step()
 
@@ -255,8 +254,8 @@ class w1ot:
             scheduler_eta.step()
 
             progress_bar.set_postfix({
-                'D Loss': f'{discriminator_loss.item():.4f}',
-                'G Loss': f'{generator_loss.item():.4f}',
+                'D': f'{discriminator_loss.item():.2f}',
+                'G': f'{generator_loss.item():.2f}',
             })
                 
             if (iteration + 1) % checkpoint_interval == 0:
@@ -465,6 +464,7 @@ class w2ot:
                                batch_size: int = 256,
                                num_iters: int = 100000,
                                num_inner_iter: int = 10,
+                               flavor: str = 'cellot',
                                lr_init: float = 1e-3,
                                lr_min: float = 1e-4,
                                betas: Tuple[float, float] = (0.5, 0.9),
@@ -474,17 +474,38 @@ class w2ot:
                                **kwargs):
 
         # Initialize the ICNN
-        self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 0, 'kernel_init': kernel_init, 'b': 0.1, 'std': 0.1}
-        self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 1, 'kernel_init': kernel_init, 'b': 0.1, 'std': 0.1}
+        if flavor == 'cellot':
+            self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 0, 'kernel_init': 'uniform', 'b': 0.1}
+            self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 1, 'kernel_init': 'uniform', 'b': 0.1}
+            # Initialize the optimizers
+            self.optimizer_f = optim.Adam(self.f.parameters(), lr=1e-4, betas=(0.5, 0.9))
+            self.optimizer_g = optim.Adam(self.g.parameters(), lr=1e-4, betas=(0.5, 0.9))
+            batch_size = 256
+
+        elif flavor == 'makkuva':
+            self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 0, 'kernel_init': None}
+            self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 1, 'kernel_init': None}
+            # Initialize the optimizers
+            self.optimizer_f = optim.Adam(self.f.parameters(), lr=1e-4, betas=(0.5, 0.9))
+            self.optimizer_g = optim.Adam(self.g.parameters(), lr=1e-4, betas=(0.5, 0.9))
+            batch_size = 1024
+
+        elif flavor == 'custom':
+            self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 0, 'kernel_init':kernel_init}
+            self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 1, 'kernel_init':kernel_init}
+            self.optimizer_f = optim.Adam(self.f.parameters(), lr=lr_init, betas=betas)
+            self.optimizer_g = optim.Adam(self.g.parameters(), lr=lr_init, betas=betas)
+            self.scheduler_f = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_f, T_max=num_iters, eta_min=lr_min)
+            self.scheduler_g = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_g, T_max=num_iters, eta_min=lr_min)
+
+        else:
+            raise ValueError(f"Invalid flavor: {flavor}")
+
+        
         self.f = ICNN(**self.network_config['f']).to(self.device)
         self.g = ICNN(**self.network_config['g']).to(self.device)
-        # Initialize the optimizers
-        self.optimizer_f = optim.Adam(self.f.parameters(), lr=lr_init, betas=betas)
-        self.optimizer_g = optim.Adam(self.g.parameters(), lr=lr_init, betas=betas)
-
-        self.scheduler_f = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_f, T_max=num_iters, eta_min=lr_min)
-        self.scheduler_g = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_g, T_max=num_iters, eta_min=lr_min)
-
+        
+        
         start_iter = 0
         if resume_from_checkpoint:
             try:
@@ -513,7 +534,6 @@ class w2ot:
                 self.optimizer_g.zero_grad()
                 loss_g = self._compute_loss_g(self.f, self.g, source_batch).mean()
                 
-                
                 if self.g.fnorm_penalty > 0:
                     loss_g += self.g.penalize_w()
 
@@ -531,8 +551,10 @@ class w2ot:
             self.optimizer_f.step()
         
             self.f.clamp_w()
-            self.scheduler_f.step()
-            self.scheduler_g.step()
+
+            if self.scheduler_f is not None and self.scheduler_g is not None:
+                self.scheduler_f.step()
+                self.scheduler_g.step()
 
             w2_distance = self.compute_w2_distance(self.f, self.g, source_batch, target_batch)
 

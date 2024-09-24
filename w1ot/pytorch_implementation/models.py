@@ -3,6 +3,8 @@ import torch.nn as nn
 import numpy as np
 from .layers import BjorckLayer, CayleyLayer
 
+from typing import List
+
 class LBNN(nn.Module):
     def __init__(self, 
                  input_size: int, 
@@ -158,5 +160,5 @@ class ICNN(nn.Module):
 
     def penalize_w(self):
         return self.fnorm_penalty * sum(
-            map(lambda x:  torch.nn.functional.relu(-x.weight).square().sum(), self.W)
+            map(lambda x:  torch.nn.functional.relu(-x.weight).norm(), self.W)
         )
