@@ -34,12 +34,19 @@ class OTDataset(torch.utils.data.Dataset):
             self.transport_direction = None
         self.p = source.shape[1]
         self.device = device
+       
     
     def sample_target(self, batch_size: int):
+        if batch_size > self.target.size(0) or batch_size > self.source.size(0):
+            batch_size = min(self.source.size(0), self.target.size(0))
+        
         idx = torch.randperm(self.target.size(0))[:batch_size]
         return self.target[idx]
 
     def sample_source(self, batch_size: int):
+        if batch_size > self.target.size(0) or batch_size > self.source.size(0):
+            batch_size = min(self.source.size(0), self.target.size(0))
+        
         idx = torch.randperm(self.source.size(0))[:batch_size]
         if self.transport_direction is not None:
             return self.source[idx], self.transport_direction[idx]
@@ -56,8 +63,9 @@ class w1ot:
     def __init__(self,
                  source: np.ndarray = None,
                  target: np.ndarray = None,
+                 validation_size: float = 0.1,
                  device = None,
-                 model_name = None):
+                 path = None):
         """
         Initialize the Wasserstein-1 optimal transport model.
         :param source: data sampled from the source distribution
@@ -70,8 +78,8 @@ class w1ot:
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        if model_name is not None:
-            self.path = os.path.join('./saved_models/w1ot', model_name)
+        if path is not None:
+            self.path = path
         else:
             self.path = './saved_models/w1ot'
         
@@ -79,10 +87,17 @@ class w1ot:
             os.makedirs(self.path)
 
         if source is not None and target is not None:
-            self.dataset = OTDataset(source, target, device=self.device)
+            # Split the dataset into training and validation sets
+            val_size = int(validation_size * min(source.shape[0], target.shape[0]))
+            train_size_source = source.shape[0] - val_size
+            train_size_target = target.shape[0] - val_size
+
+            self.dataset = OTDataset(source[:train_size_source], target[:train_size_target], device=self.device)
+            self.val_dataset = OTDataset(source[train_size_source:], target[train_size_target:], device=self.device)
             self.p = source.shape[1]
         else:
             self.dataset = None
+            self.val_dataset = None
 
         self.network_config = {}
         # Kantorovich potential
@@ -125,6 +140,7 @@ class w1ot:
         scheduler = CosineAnnealingLR(optimizer_phi, T_max=num_iters, eta_min=lr_min)
 
         start_iter = 0
+        best_val_w1 = float('-inf')
         if resume_from_checkpoint:
             try:
                 checkpoint = self._load_checkpoint('potential')
@@ -132,7 +148,8 @@ class w1ot:
                 optimizer_phi.load_state_dict(checkpoint['optimizer_state_dict'])
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 start_iter = checkpoint['iteration']
-                print(f"Resuming from iteration {start_iter}")
+                best_val_w1 = checkpoint['best_val_w1']
+                print(f"Resuming from iteration {start_iter} with best validation W1: {best_val_w1}")
             except:
                 print(f"Could not load checkpoint. Training from scratch.")
 
@@ -158,7 +175,14 @@ class w1ot:
             })
 
             if (iteration + 1) % checkpoint_interval == 0:
-                self._save_checkpoint('potential', iteration + 1, self.phi, optimizer_phi, scheduler)
+                self.phi.eval()
+                with torch.no_grad():
+                    val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
+                    val_w1 = (self.phi(val_source_batch).mean() - self.phi(val_target_batch).mean()).item()
+                self.phi.train()
+                if val_w1 > best_val_w1:
+                    best_val_w1 = val_w1
+                    self._save_checkpoint('potential', iteration + 1, self.phi, optimizer_phi, scheduler, best_val_w1)
     
 
     def fit_distance_function(self,
@@ -339,11 +363,12 @@ class w1ot:
             'iteration': iteration,
         }
         if checkpoint_type == 'potential':
-            model, optimizer, scheduler = args
+            model, optimizer, scheduler, best_val_w1 = args
             checkpoint.update({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_w1': best_val_w1,
             })
         elif checkpoint_type == 'distance':
             eta, optimizer_eta, scheduler_eta, D, optimizer_D, scheduler_D = args
@@ -380,6 +405,9 @@ class w1ot:
             self.D = DNN(**self.network_config['D'])
             self.D.load_state_dict(self.network_config['D_state_dict'])
             self.D = self.D.to(self.device)
+    
+    def save(self, path):
+        self._save_model(path)
 
     def plot_2dpotential(self, resolution=100):
         """
@@ -433,15 +461,16 @@ class w2ot:
     def __init__(self,
                  source: np.ndarray = None,
                  target: np.ndarray = None,
+                 validation_size: float = 0.1,
                  device = None,
-                 model_name = None):
+                 path = None):
         if device is not None:
             self.device = torch.device(device)
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        if model_name is not None:
-            self.path = os.path.join('./saved_models/w2ot', model_name)
+        if path is not None:
+            self.path = path
         else:
             self.path = './saved_models/w2ot'
         
@@ -449,22 +478,32 @@ class w2ot:
             os.makedirs(self.path)
 
         if source is not None and target is not None:
-            self.dataset = OTDataset(source, target, device=self.device)
+            # Split the dataset into training and validation sets
+            val_size = int(validation_size * min(source.shape[0], target.shape[0]))
+            train_size_source = source.shape[0] - val_size
+            train_size_target = target.shape[0] - val_size
+
+            self.dataset = OTDataset(source[:train_size_source], target[:train_size_target], device=self.device)
+            self.val_dataset = OTDataset(source[train_size_source:], target[train_size_target:], device=self.device)
             self.p = source.shape[1]
         else:
             self.dataset = None
+            self.val_dataset = None
         
         self.f = None
         self.g = None
 
+        self.scheduler_f = None
+        self.scheduler_g = None
+
         self.network_config = {}
     
     def fit_potential_function(self,
+                               flavor: str = 'cellot',
                                hidden_sizes: List[int] = [64]*4,
                                batch_size: int = 256,
                                num_iters: int = 100000,
                                num_inner_iter: int = 10,
-                               flavor: str = 'cellot',
                                lr_init: float = 1e-3,
                                lr_min: float = 1e-4,
                                betas: Tuple[float, float] = (0.5, 0.9),
@@ -477,14 +516,21 @@ class w2ot:
         if flavor == 'cellot':
             self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 0, 'kernel_init': 'uniform', 'b': 0.1}
             self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 1, 'kernel_init': 'uniform', 'b': 0.1}
+            self.f = ICNN(**self.network_config['f']).to(self.device)
+            self.g = ICNN(**self.network_config['g']).to(self.device)
+        
             # Initialize the optimizers
             self.optimizer_f = optim.Adam(self.f.parameters(), lr=1e-4, betas=(0.5, 0.9))
             self.optimizer_g = optim.Adam(self.g.parameters(), lr=1e-4, betas=(0.5, 0.9))
             batch_size = 256
+            num_iters = 100000
 
         elif flavor == 'makkuva':
             self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 0, 'kernel_init': None}
             self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 1, 'kernel_init': None}
+            self.f = ICNN(**self.network_config['f']).to(self.device)
+            self.g = ICNN(**self.network_config['g']).to(self.device)
+        
             # Initialize the optimizers
             self.optimizer_f = optim.Adam(self.f.parameters(), lr=1e-4, betas=(0.5, 0.9))
             self.optimizer_g = optim.Adam(self.g.parameters(), lr=1e-4, betas=(0.5, 0.9))
@@ -493,6 +539,9 @@ class w2ot:
         elif flavor == 'custom':
             self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 0, 'kernel_init':kernel_init}
             self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 1, 'kernel_init':kernel_init}
+            self.f = ICNN(**self.network_config['f']).to(self.device)
+            self.g = ICNN(**self.network_config['g']).to(self.device)
+        
             self.optimizer_f = optim.Adam(self.f.parameters(), lr=lr_init, betas=betas)
             self.optimizer_g = optim.Adam(self.g.parameters(), lr=lr_init, betas=betas)
             self.scheduler_f = optim.lr_scheduler.CosineAnnealingLR(self.optimizer_f, T_max=num_iters, eta_min=lr_min)
@@ -502,11 +551,10 @@ class w2ot:
             raise ValueError(f"Invalid flavor: {flavor}")
 
         
-        self.f = ICNN(**self.network_config['f']).to(self.device)
-        self.g = ICNN(**self.network_config['g']).to(self.device)
         
         
         start_iter = 0
+        best_val_w2 = float('-inf')
         if resume_from_checkpoint:
             try:
                 checkpoint = self._load_checkpoint()
@@ -515,7 +563,8 @@ class w2ot:
                 self.optimizer_f.load_state_dict(checkpoint['optimizer_f_state_dict'])
                 self.optimizer_g.load_state_dict(checkpoint['optimizer_g_state_dict'])
                 start_iter = checkpoint['iteration']
-                print(f"Resuming from iteration {start_iter}")
+                best_val_w2 = checkpoint['best_val_w2']
+                print(f"Resuming from iteration {start_iter} with best validation W2: {best_val_w2}")
             except:
                 print(f"Could not load checkpoint. Starting training from scratch.")
         
@@ -563,7 +612,16 @@ class w2ot:
             })
 
             if (iteration + 1) % checkpoint_interval == 0:
-                self._save_checkpoint(iteration + 1)
+                self.f.eval()
+                self.g.eval()
+                with torch.no_grad():
+                    val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
+                    val_w2 = self.compute_w2_distance(self.f, self.g, val_source_batch, val_target_batch).item()
+                self.f.train()
+                self.g.train()
+                if val_w2 > best_val_w2:
+                    best_val_w2 = val_w2
+                    self._save_checkpoint(iteration + 1, best_val_w2)
         self._save_model(self.path)
         print("Training completed.")
 
@@ -616,13 +674,14 @@ class w2ot:
 
         plt.show()
 
-    def _save_checkpoint(self, iteration):
+    def _save_checkpoint(self, iteration, best_val_w2):
         checkpoint = {
             'iteration': iteration,
             'f_state_dict': self.f.state_dict(),
             'g_state_dict': self.g.state_dict(),
             'optimizer_f_state_dict': self.optimizer_f.state_dict(),
             'optimizer_g_state_dict': self.optimizer_g.state_dict(),
+            'best_val_w2': best_val_w2
         }
         torch.save(checkpoint, os.path.join(self.path, 'checkpoint.pth'))
 
@@ -646,6 +705,9 @@ class w2ot:
         self.g.load_state_dict(self.network_config['g_state_dict'])
         self.f = self.f.to(self.device)
         self.g = self.g.to(self.device)
+    
+    def save(self, path):
+        self._save_model(path)
         
     # below are borrowed from cellot: https://github.com/bunnech/cellot/blob/main/cellot/models/cellot.py
 
