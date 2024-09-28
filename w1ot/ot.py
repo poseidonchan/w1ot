@@ -114,9 +114,8 @@ class w1ot:
 
     def fit_potential_function(self,
                            hidden_sizes: List[int] = [64]*4,
-                           orthornormal_layer: str = 'cayley',
-                           groups: int = 2,
-                           batch_size: int = 256,
+                           orthornormal_layer: str = 'bjorck',
+                           batch_size: int = 512,
                            num_iters: int = 10000,
                            lr_init: float = 1e-3,
                            lr_min: float = 1e-5,
@@ -129,7 +128,6 @@ class w1ot:
         self.phi_network_opt['scale'] = 1
         self.phi_network_opt['hidden_sizes'] = hidden_sizes
         self.phi_network_opt['orthornormal_layer'] = orthornormal_layer
-        self.phi_network_opt['groups'] = groups
 
         self.network_config['phi'] = self.phi_network_opt
         self.phi = LBNN(**self.phi_network_opt).to(self.device)
@@ -140,7 +138,7 @@ class w1ot:
         scheduler = CosineAnnealingLR(optimizer_phi, T_max=num_iters, eta_min=lr_min)
 
         start_iter = 0
-        best_val_w1 = float('-inf')
+        
         if resume_from_checkpoint:
             try:
                 checkpoint = self._load_checkpoint('potential')
@@ -175,14 +173,13 @@ class w1ot:
             })
 
             if (iteration + 1) % checkpoint_interval == 0:
-                self.phi.eval()
-                with torch.no_grad():
-                    val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
-                    val_w1 = (self.phi(val_source_batch).mean() - self.phi(val_target_batch).mean()).item()
-                self.phi.train()
-                if val_w1 > best_val_w1:
-                    best_val_w1 = val_w1
-                    self._save_checkpoint('potential', iteration + 1, self.phi, optimizer_phi, scheduler, best_val_w1)
+                if self.val_dataset is not None:
+                    self.phi.eval()
+                    with torch.no_grad():
+                        val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
+                        val_w1 = (self.phi(val_source_batch).mean() - self.phi(val_target_batch).mean()).item()
+                    self.phi.train()
+                self._save_checkpoint('potential', iteration + 1, self.phi, optimizer_phi, scheduler)
     
 
     def fit_distance_function(self,
@@ -190,8 +187,8 @@ class w1ot:
                               eta_hidden_sizes: List[int] = [64]*4,
                               batch_size: int = 256,
                               num_iters: int = 10000,
-                              lr_init: float = 1e-4,
-                              lr_min: float = 1e-5,
+                              lr_init: float = 1e-2,
+                              lr_min: float = 1e-3,
                               checkpoint_interval: int = 1000,
                               resume_from_checkpoint: bool = True) -> None:
         reproducibility()
@@ -210,8 +207,8 @@ class w1ot:
         self.network_config['eta'] = self.eta_network_opt
         self.network_config['D'] = self.d_network_opt
        
-        optimizer_D = optim.RMSprop(self.D.parameters(), lr=lr_init)
-        optimizer_eta = optim.RMSprop(self.eta.parameters(), lr=lr_init)
+        optimizer_D = optim.SGD(self.D.parameters(), lr=lr_init)
+        optimizer_eta = optim.SGD(self.eta.parameters(), lr=lr_init)
         
 
         scheduler_D = CosineAnnealingLR(optimizer_D, T_max=num_iters, eta_min=lr_min)
@@ -262,6 +259,7 @@ class w1ot:
             discriminator_loss = - torch.mean(torch.log(self.D(target_batch) + 1e-6)) - torch.mean(
                 torch.log(1 - self.D(transported_batch.detach()) + 1e-6))
 
+            D_real = torch.mean(self.D(target_batch))
             # Update the discriminator
             discriminator_loss.backward()
             optimizer_D.step()
@@ -278,8 +276,8 @@ class w1ot:
             scheduler_eta.step()
 
             progress_bar.set_postfix({
-                'D': f'{discriminator_loss.item():.2f}',
-                'G': f'{generator_loss.item():.2f}',
+                'D': f'{D_real.item():.2f}',
+                'G': f'{torch.mean(D_fake).item():.2f}',
             })
                 
             if (iteration + 1) % checkpoint_interval == 0:
@@ -363,12 +361,11 @@ class w1ot:
             'iteration': iteration,
         }
         if checkpoint_type == 'potential':
-            model, optimizer, scheduler, best_val_w1 = args
+            model, optimizer, scheduler = args
             checkpoint.update({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'best_val_w1': best_val_w1,
             })
         elif checkpoint_type == 'distance':
             eta, optimizer_eta, scheduler_eta, D, optimizer_D, scheduler_D = args
@@ -614,9 +611,9 @@ class w2ot:
             if (iteration + 1) % checkpoint_interval == 0:
                 self.f.eval()
                 self.g.eval()
-                with torch.no_grad():
-                    val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
-                    val_w2 = self.compute_w2_distance(self.f, self.g, val_source_batch, val_target_batch).item()
+                val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
+                val_source_batch.requires_grad_(True)
+                val_w2 = self.compute_w2_distance(self.f, self.g, val_source_batch, val_target_batch).item()
                 self.f.train()
                 self.g.train()
                 if val_w2 > best_val_w2:

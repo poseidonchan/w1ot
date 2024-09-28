@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from .layers import BjorckLayer, CayleyLayer
+from .layers import BjorckLayer, CayleyLayer, SandwichLayer
 
 from typing import List
 
@@ -11,8 +11,7 @@ class LBNN(nn.Module):
                  output_size: int = 1, 
                  hidden_sizes: List[int] = [64, 64, 64, 64], 
                  scale: float = 1.0, 
-                 orthornormal_layer: str='bjorck', 
-                 groups: int=2):
+                 orthornormal_layer: str='cayley'):
         super().__init__()
 
         self.input_size = input_size
@@ -23,17 +22,19 @@ class LBNN(nn.Module):
             orthornormal_layer = BjorckLayer
         elif orthornormal_layer == 'cayley':
             orthornormal_layer = CayleyLayer
+        elif orthornormal_layer == 'sandwich':
+            orthornormal_layer = SandwichLayer
         else:
-            raise ValueError("Orthornormal layer must be 'bjorck' or 'cayley'")
+            raise ValueError("Orthornormal layer must be 'bjorck', 'cayley', or 'sandwich'")
 
         # Create layers
         layers = []
         prev_size = input_size
         for i, hidden_size in enumerate(hidden_sizes):
             if i == 0:
-                layers.append(orthornormal_layer(prev_size, hidden_size, scale=np.sqrt(scale), groups=groups))
+                layers.append(orthornormal_layer(prev_size, hidden_size, scale=np.sqrt(scale), groups=4))
             else:
-                layers.append(orthornormal_layer(prev_size, hidden_size, scale=1, groups=groups))
+                layers.append(orthornormal_layer(prev_size, hidden_size, scale=1, groups=4))
             prev_size = hidden_size
 
         layers.append(orthornormal_layer(prev_size, output_size, scale=np.sqrt(scale), groups=1))
@@ -60,7 +61,7 @@ class DNN(nn.Module):
         prev_size = input_size
         for hidden_size in hidden_sizes:
             layers.append(nn.Linear(prev_size, hidden_size))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU())
             prev_size = hidden_size
 
         layers.append(nn.Linear(prev_size, output_size))
