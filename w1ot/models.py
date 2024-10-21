@@ -11,6 +11,7 @@ class LBNN(nn.Module):
                  output_size: int = 1, 
                  hidden_sizes: List[int] = [64, 64, 64, 64], 
                  scale: float = 1.0, 
+                 groups: int = 1,
                  orthornormal_layer: str='cayley'):
         super().__init__()
 
@@ -32,12 +33,12 @@ class LBNN(nn.Module):
         prev_size = input_size
         for i, hidden_size in enumerate(hidden_sizes):
             if i == 0:
-                layers.append(orthornormal_layer(prev_size, hidden_size, scale=np.sqrt(scale), groups=4))
+                layers.append(orthornormal_layer(prev_size, hidden_size, scale=np.sqrt(scale), groups=groups))
             else:
-                layers.append(orthornormal_layer(prev_size, hidden_size, scale=1, groups=4))
+                layers.append(orthornormal_layer(prev_size, hidden_size, scale=1, groups=groups))
             prev_size = hidden_size
 
-        layers.append(orthornormal_layer(prev_size, output_size, scale=np.sqrt(scale), groups=1))
+        layers.append(orthornormal_layer(prev_size, output_size, scale=np.sqrt(scale), groups=output_size))
 
 
         self.layers = nn.ModuleList(layers)

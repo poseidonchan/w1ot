@@ -11,6 +11,7 @@ setup(
     python_requires='>=3.10',
     platforms = 'any',
     install_requires = [
+	'scanpy',
         'torch',
         'numpy',
         'matplotlib',

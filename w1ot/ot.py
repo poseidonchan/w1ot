@@ -4,6 +4,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from typing import Dict, Any, List, Tuple
@@ -19,7 +20,7 @@ def reproducibility(seed=1):
         torch.backends.cudnn.deterministic = True
 
 
-class OTDataset(torch.utils.data.Dataset):
+class OTDataset:
     def __init__(self, 
                  source,
                  target,
@@ -34,35 +35,48 @@ class OTDataset(torch.utils.data.Dataset):
             self.transport_direction = None
         self.p = source.shape[1]
         self.device = device
-       
-    
+
+        # Initialize permutation indices and counters for source and target
+        self.source_indices = torch.randperm(self.source.size(0))
+        self.source_idx = 0
+
+        self.target_indices = torch.randperm(self.target.size(0))
+        self.target_idx = 0
+
     def sample_target(self, batch_size: int):
-        if batch_size > self.target.size(0) or batch_size > self.source.size(0):
-            batch_size = min(self.source.size(0), self.target.size(0))
+        if batch_size > self.target.size(0):
+            batch_size = self.target.size(0)
         
-        idx = torch.randperm(self.target.size(0))[:batch_size]
+        if self.target_idx + batch_size > self.target.size(0):
+            # Reshuffle and reset index
+            self.target_indices = torch.randperm(self.target.size(0))
+            self.target_idx = 0
+
+        idx = self.target_indices[self.target_idx:self.target_idx + batch_size]
+        self.target_idx += batch_size
         return self.target[idx]
 
     def sample_source(self, batch_size: int):
-        if batch_size > self.target.size(0) or batch_size > self.source.size(0):
-            batch_size = min(self.source.size(0), self.target.size(0))
+        if batch_size > self.source.size(0):
+            batch_size = self.source.size(0)
         
-        idx = torch.randperm(self.source.size(0))[:batch_size]
+        if self.source_idx + batch_size > self.source.size(0):
+            # Reshuffle and reset index
+            self.source_indices = torch.randperm(self.source.size(0))
+            self.source_idx = 0
+
+        idx = self.source_indices[self.source_idx:self.source_idx + batch_size]
+        self.source_idx += batch_size
         if self.transport_direction is not None:
             return self.source[idx], self.transport_direction[idx]
         else:
             return self.source[idx]
-    
-    def __len__(self):
-        return self.source.size(0)
-    
-    def __getitem__(self, idx):
-        return self.source[idx], self.target[idx]
 
 class w1ot:
     def __init__(self,
                  source: np.ndarray = None,
                  target: np.ndarray = None,
+                 positive: bool = False,
                  validation_size: float = 0.1,
                  device = None,
                  path = None):
@@ -88,6 +102,7 @@ class w1ot:
 
         if source is not None and target is not None:
             # Split the dataset into training and validation sets
+            
             val_size = int(validation_size * min(source.shape[0], target.shape[0]))
             train_size_source = source.shape[0] - val_size
             train_size_target = target.shape[0] - val_size
@@ -112,23 +127,26 @@ class w1ot:
         self.d_network_opt = {}
         self.D = None
 
+        self.positive = positive
+
     def fit_potential_function(self,
                            hidden_sizes: List[int] = [64]*4,
-                           orthornormal_layer: str = 'bjorck',
-                           batch_size: int = 512,
+                           orthornormal_layer: str = 'cayley',
+                           groups: int = 4,
+                           batch_size: int = 256,
                            num_iters: int = 10000,
-                           lr_init: float = 1e-3,
-                           lr_min: float = 1e-5,
+                           lr_init: float = 1e-2,
+                           lr_min: float = 1e-4,
                            betas: Tuple[float, float] = (0.5, 0.5),
-                           checkpoint_interval: int = 1000,
-                           resume_from_checkpoint: bool = True) -> None:
+                           checkpoint_interval: int = 100,
+                           resume_from_checkpoint: bool = False) -> None:
         reproducibility()
         self.phi_network_opt['input_size'] = self.p
         self.phi_network_opt['output_size'] = 1
         self.phi_network_opt['scale'] = 1
         self.phi_network_opt['hidden_sizes'] = hidden_sizes
         self.phi_network_opt['orthornormal_layer'] = orthornormal_layer
-
+        self.phi_network_opt['groups'] = groups
         self.network_config['phi'] = self.phi_network_opt
         self.phi = LBNN(**self.phi_network_opt).to(self.device)
 
@@ -156,6 +174,9 @@ class w1ot:
                 scheduler.step()
         
         self.phi.train()
+
+        best_val_w1 = 0
+
         progress_bar = tqdm(range(start_iter, num_iters), desc="Training potential")
         for iteration in progress_bar:
             source_batch, target_batch = self.dataset.sample_source(batch_size), self.dataset.sample_target(batch_size)
@@ -179,18 +200,21 @@ class w1ot:
                         val_source_batch, val_target_batch = self.val_dataset.sample_source(10e+8), self.val_dataset.sample_target(10e+8)
                         val_w1 = (self.phi(val_source_batch).mean() - self.phi(val_target_batch).mean()).item()
                     self.phi.train()
+                    if val_w1 > best_val_w1:
+                        best_val_w1 = val_w1
+                
                 self._save_checkpoint('potential', iteration + 1, self.phi, optimizer_phi, scheduler)
-    
 
     def fit_distance_function(self,
                               d_hidden_sizes: List[int] = [64]*4,
                               eta_hidden_sizes: List[int] = [64]*4,
                               batch_size: int = 256,
                               num_iters: int = 10000,
-                              lr_init: float = 1e-2,
-                              lr_min: float = 1e-3,
-                              checkpoint_interval: int = 1000,
-                              resume_from_checkpoint: bool = True) -> None:
+                              lr_init: float = 1e-4,
+                              lr_min: float = 1e-4,
+                              betas: Tuple[float, float] = (0.9, 0.999),
+                              checkpoint_interval: int = 100,
+                              resume_from_checkpoint: bool = False) -> None:
         reproducibility()
         self.eta_network_opt['input_size'] = self.p
         self.eta_network_opt['output_size'] = 1
@@ -207,8 +231,8 @@ class w1ot:
         self.network_config['eta'] = self.eta_network_opt
         self.network_config['D'] = self.d_network_opt
        
-        optimizer_D = optim.SGD(self.D.parameters(), lr=lr_init)
-        optimizer_eta = optim.SGD(self.eta.parameters(), lr=lr_init)
+        optimizer_D = optim.Adam(self.D.parameters(), lr=lr_init, betas=betas)
+        optimizer_eta = optim.Adam(self.eta.parameters(), lr=lr_init, betas=betas)
         
 
         scheduler_D = CosineAnnealingLR(optimizer_D, T_max=num_iters, eta_min=lr_min)
@@ -232,7 +256,10 @@ class w1ot:
         self.eta.train()
         self.D.train()
 
-        progress_bar = tqdm(range(start_iter, num_iters), desc="Training")
+        progress_bar = tqdm(range(start_iter, num_iters), desc="Training")\
+
+        checkpoint = self._load_checkpoint('potential')
+        self.phi.load_state_dict(checkpoint['model_state_dict'])
 
         source = self.dataset.source.requires_grad_(True)
         (direction,) = torch.autograd.grad(
@@ -242,7 +269,7 @@ class w1ot:
             only_inputs=True,
             grad_outputs=torch.ones((source.size()[0], 1), device=source.device).float(),
         )
-        self.dataset.transport_direction = direction.detach()
+        self.dataset.transport_direction = direction.detach()/(direction.detach().norm(p=2, dim=1).reshape(-1,1) + 1e-6)
         self.dataset.source.requires_grad_(False)
 
         for iteration in progress_bar:
@@ -253,15 +280,19 @@ class w1ot:
             optimizer_D.zero_grad()
 
             # Transport the source batch using the current alpha network
-            transported_batch = source_batch - self.eta(source_batch) * direction_batch
+            if self.positive:
+                transported_batch = F.relu(source_batch - self.eta(source_batch) * direction_batch)
+            else:
+                transported_batch = source_batch - self.eta(source_batch) * direction_batch
 
             # Discriminator loss: Use log loss
-            discriminator_loss = - torch.mean(torch.log(self.D(target_batch) + 1e-6)) - torch.mean(
-                torch.log(1 - self.D(transported_batch.detach()) + 1e-6))
-
             D_real = torch.mean(self.D(target_batch))
+            discriminator_loss_1 = - torch.mean(torch.log(self.D(target_batch) + 1e-6))
+            discriminator_loss_1.backward()
+
+            discriminator_loss_2 = - torch.mean(torch.log(1 - self.D(transported_batch.detach()) + 1e-6))
             # Update the discriminator
-            discriminator_loss.backward()
+            discriminator_loss_2.backward()
             optimizer_D.step()
 
             # Generator (Transport) loss: Use log loss to fool the discriminator
@@ -284,6 +315,9 @@ class w1ot:
                 self._save_checkpoint('distance', iteration + 1, self.eta, optimizer_eta, scheduler_eta, 
                                       self.D, optimizer_D, scheduler_D)
 
+        print("Final GAN stats:")
+        print("D_real: ", D_real.item())
+        print("D_fake: ", torch.mean(D_fake).item())
         self._save_model(self.path)
 
 
@@ -326,7 +360,10 @@ class w1ot:
         print("Max Lipschitz constant: ", direction.norm(p=2, dim=1).max().item())
         print("Mean Lipschitz constant: ", direction.norm(p=2, dim=1).mean().item())
 
-        transported = source - self.eta(source) * direction
+        if self.positive:
+            transported = F.relu(source - self.eta(source) * direction)
+        else:
+            transported = source - self.eta(source) * direction
 
         return transported.cpu().detach().numpy()
 
@@ -458,9 +495,11 @@ class w2ot:
     def __init__(self,
                  source: np.ndarray = None,
                  target: np.ndarray = None,
+                 positive: bool = False,
                  validation_size: float = 0.1,
                  device = None,
-                 path = None):
+                 path = None,
+                 ):
         if device is not None:
             self.device = torch.device(device)
         else:
@@ -494,9 +533,10 @@ class w2ot:
         self.scheduler_g = None
 
         self.network_config = {}
+        self.positive = positive
     
     def fit_potential_function(self,
-                               flavor: str = 'cellot',
+                               flavor: str = 'ot_icnn',
                                hidden_sizes: List[int] = [64]*4,
                                batch_size: int = 256,
                                num_iters: int = 100000,
@@ -505,8 +545,8 @@ class w2ot:
                                lr_min: float = 1e-4,
                                betas: Tuple[float, float] = (0.5, 0.9),
                                kernel_init: str = None,
-                               resume_from_checkpoint: bool = True,
-                               checkpoint_interval: int = 1000,
+                               resume_from_checkpoint: bool = False,
+                               checkpoint_interval: int = 100,
                                **kwargs):
 
         # Initialize the ICNN
@@ -522,7 +562,7 @@ class w2ot:
             batch_size = 256
             num_iters = 100000
 
-        elif flavor == 'makkuva':
+        elif flavor == 'ot_icnn':
             self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 0, 'kernel_init': None}
             self.network_config['g'] = {'input_size': self.p, 'hidden_sizes': [64]*4, 'fnorm_penalty': 1, 'kernel_init': None}
             self.f = ICNN(**self.network_config['f']).to(self.device)
@@ -531,7 +571,8 @@ class w2ot:
             # Initialize the optimizers
             self.optimizer_f = optim.Adam(self.f.parameters(), lr=1e-4, betas=(0.5, 0.9))
             self.optimizer_g = optim.Adam(self.g.parameters(), lr=1e-4, betas=(0.5, 0.9))
-            batch_size = 1024
+            batch_size = 256
+            num_iters = 100000
 
         elif flavor == 'custom':
             self.network_config['f'] = {'input_size': self.p, 'hidden_sizes': hidden_sizes, 'fnorm_penalty': 0, 'kernel_init':kernel_init}
@@ -547,11 +588,7 @@ class w2ot:
         else:
             raise ValueError(f"Invalid flavor: {flavor}")
 
-        
-        
-        
         start_iter = 0
-        best_val_w2 = float('-inf')
         if resume_from_checkpoint:
             try:
                 checkpoint = self._load_checkpoint()
@@ -616,18 +653,22 @@ class w2ot:
                 val_w2 = self.compute_w2_distance(self.f, self.g, val_source_batch, val_target_batch).item()
                 self.f.train()
                 self.g.train()
-                if val_w2 > best_val_w2:
-                    best_val_w2 = val_w2
-                    self._save_checkpoint(iteration + 1, best_val_w2)
+                self._save_checkpoint(iteration + 1, val_w2)
         self._save_model(self.path)
         print("Training completed.")
 
     def transport(self, source: np.ndarray, reverse: bool = False) -> np.ndarray:
         source = torch.tensor(source, dtype=torch.float32, device=self.device).requires_grad_(True)
         if reverse:
-            transported = self.f.transport(source).detach().cpu().numpy()
+            if self.positive:
+                transported = F.relu(self.f.transport(source)).detach().cpu().numpy()
+            else:
+                transported = self.f.transport(source).detach().cpu().numpy()
         else:
-            transported = self.g.transport(source).detach().cpu().numpy()
+            if self.positive:
+                transported = F.relu(self.g.transport(source)).detach().cpu().numpy()
+            else:
+                transported = self.g.transport(source).detach().cpu().numpy()
         return transported
     
     def plot_2dpotential(self, resolution=100):
