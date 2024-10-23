@@ -50,7 +50,14 @@ plot_2d_data(source, target, transported, False, 0.5)
 
 ## Experiments
 
-To reproduce the experiments quickly, we suggest you install the Ray and configure your own Ray clusters. After than you can submit the experiments codes in the Experiments folder.
+To reproduce the experiments efficiently, we suggest you install the ***Ray (2.37.0)*** and configure your own Ray clusters. After that you can run the experiments codes in the Experiments folder.
+
+```bash
+# for example:
+python ./Experiments/4i.py
+```
+
+If you do not have access to enough computation resources, the reproducing procedure could be very slow.
 
 
 ## Citation
