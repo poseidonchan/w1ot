@@ -20,7 +20,21 @@ class PerturbModel:
                  hidden_layers: List[int] = [512, 512],
                  num_iters: int = 250000,
                  device: str = None) -> None:
+        """
+        Initialize the PerturbModel.
 
+        Parameters:
+        model_name (str): Name of the model to be used.
+        source_adata (AnnData): Source AnnData object.
+        target_adata (AnnData): Target AnnData object.
+        perturbation_attribute (str): Attribute for perturbation. Default is 'perturbation'.
+        embedding (bool): Whether to use embedding. Default is True.
+        latent_dim (int): Dimension of the latent space. Default is 50.
+        output_dir (str): Directory to save outputs. Default is None.
+        hidden_layers (List[int]): List of hidden layer sizes. Default is [512, 512].
+        num_iters (int): Number of iterations for training. Default is 250000.
+        device (str): Device to be used for computation. Default is None.
+        """
         self.model_name = model_name
         self.source_adata = source_adata
         self.target_adata = target_adata
@@ -33,6 +47,9 @@ class PerturbModel:
         self.num_iters = num_iters
 
     def train(self) -> None:
+        """
+        Train the model.
+        """
         if self.embedding:
             self.embedding_model = VAE(alpha=0.0, device=self.device, output_dir=self.output_dir)
             # balance the source and target data in the embedding space
@@ -117,6 +134,15 @@ class PerturbModel:
     def predict(self, 
                 source_adata: AnnData,
                 ) -> AnnData:
+        """
+        Predict the target data from the source data.
+
+        Parameters:
+        source_adata (AnnData): Source AnnData object.
+
+        Returns:
+        AnnData: Predicted target AnnData object.
+        """
         if self.embedding:
             source = self.embedding_model.get_latent_representation(source_adata)
         else:
@@ -144,7 +170,18 @@ class PerturbModel:
 
         return transported_adata
     
-    def evaluate(self, source_adata, target_adata, top_k=50):
+    def evaluate(self, source_adata: AnnData, target_adata: AnnData, top_k: int = 50) -> tuple:
+        """
+        Evaluate the model.
+
+        Parameters:
+        source_adata (AnnData): Source AnnData object.
+        target_adata (AnnData): Target AnnData object.
+        top_k (int): Number of top genes to consider. Default is 50.
+
+        Returns:
+        tuple: Evaluation metrics.
+        """
         # balance the source and target data when evaluating
         eval_sample_size = min(source_adata.shape[0], target_adata.shape[0])
         source_ind = np.random.choice(range(source_adata.shape[0]), size=eval_sample_size, replace=False)
@@ -228,6 +265,22 @@ def run_perturbation_task(
     start_run: int,
     perturbation: str
 ):
+    """
+    Run a perturbation task.
+
+    Parameters:
+    adata (AnnData): AnnData object containing the dataset.
+    datasets_name (str): Name of the dataset.
+    output_dir (str): Directory to save outputs.
+    perturbation_attribute (str): Attribute for perturbation.
+    test_size (float): Proportion of the dataset to include in the test split.
+    device (str): Device to be used for computation.
+    embedding (bool): Whether to use embedding.
+    latent_dims (List[int]): List of latent dimensions to consider.
+    num_run (int): Number of runs.
+    start_run (int): Starting run number.
+    perturbation (str): Perturbation to be applied.
+    """
     import os
     import pandas as pd
     import numpy as np
@@ -539,7 +592,24 @@ def run_iid_perturbation(
     latent_dims: List[int] = [50],
     num_run: int = 1,
     start_run: int = 0,
-):
+) -> List:
+    """
+    Run IID perturbation experiments.
+
+    Parameters:
+    dataset_path (str): Path to the dataset file.
+    output_dir (str): Directory to save outputs. Default is './iid_experiments/'.
+    perturbation_attribute (str): Attribute for perturbation. Default is 'perturbation'.
+    test_size (float): Proportion of the dataset to include in the test split. Default is 0.2.
+    device (str): Device to be used for computation. Default is 'cuda'.
+    embedding (bool): Whether to use embedding. Default is True.
+    latent_dims (List[int]): List of latent dimensions to use. Default is [50].
+    num_run (int): Number of runs to perform. Default is 1.
+    start_run (int): Starting run index. Default is 0.
+
+    Returns:
+    List: List of tasks submitted to Ray.
+    """
     import os
     import pandas as pd
     import numpy as np

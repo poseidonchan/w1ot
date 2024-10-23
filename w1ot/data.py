@@ -116,7 +116,7 @@ def make_2d_data(dataset='circles',
         X, y = make_moons(n_samples=n_samples, noise=noise)
         source = X[y == 0]
         target = X[y == 1]
-        if dataset == 'moon_r':
+        if dataset == 'moons_r':
             return shuffle_data(target), shuffle_data(source)
         elif dataset == 'moons':
             return shuffle_data(source), shuffle_data(target)
@@ -201,5 +201,3 @@ def plot_2d_data(source, target, transported=None, show_relative_position=False,
     plt.title(title)
     plt.tight_layout()
     plt.show()
-
-

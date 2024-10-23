@@ -78,14 +78,18 @@ class w1ot:
                  target: np.ndarray = None,
                  positive: bool = False,
                  validation_size: float = 0.1,
-                 device = None,
-                 path = None):
+                 device: str = None,
+                 path: str = None):
         """
         Initialize the Wasserstein-1 optimal transport model.
-        :param source: data sampled from the source distribution
-        :param target: data sampled from the target distribution
-        :param validation_size: validation size, between 0 and 1
-        :param device: computing device of pytorch backend
+
+        Parameters:
+        source (np.ndarray): Data sampled from the source distribution.
+        target (np.ndarray): Data sampled from the target distribution.
+        positive (bool): Whether to use positive transport direction. Default is False.
+        validation_size (float): Validation size, between 0 and 1. Default is 0.1.
+        device (str): Computing device of PyTorch backend. Default is None.
+        path (str): Path to save the model. Default is None.
         """
         if device is not None:
             self.device = torch.device(device)
@@ -140,6 +144,21 @@ class w1ot:
                            betas: Tuple[float, float] = (0.5, 0.5),
                            checkpoint_interval: int = 100,
                            resume_from_checkpoint: bool = False) -> None:
+        """
+        Fit the potential function using the specified parameters.
+
+        Parameters:
+        hidden_sizes (List[int]): List of hidden layer sizes. Default is [64]*4.
+        orthornormal_layer (str): Type of orthonormal layer to use. Default is 'cayley'.
+        groups (int): Number of groups for GroupSort. Default is 4.
+        batch_size (int): Batch size for training. Default is 256.
+        num_iters (int): Number of iterations for training. Default is 10000.
+        lr_init (float): Initial learning rate. Default is 1e-2.
+        lr_min (float): Minimum learning rate. Default is 1e-4.
+        betas (Tuple[float, float]): Betas for the Adam optimizer. Default is (0.5, 0.5).
+        checkpoint_interval (int): Interval for saving checkpoints. Default is 100.
+        resume_from_checkpoint (bool): Whether to resume from a checkpoint. Default is False.
+        """
         reproducibility()
         self.phi_network_opt['input_size'] = self.p
         self.phi_network_opt['output_size'] = 1
@@ -215,6 +234,20 @@ class w1ot:
                               betas: Tuple[float, float] = (0.9, 0.999),
                               checkpoint_interval: int = 100,
                               resume_from_checkpoint: bool = False) -> None:
+        """
+        Fit the distance function using the specified parameters.
+
+        Parameters:
+        d_hidden_sizes (List[int]): List of hidden layer sizes for the discriminator. Default is [64]*4.
+        eta_hidden_sizes (List[int]): List of hidden layer sizes for the eta network. Default is [64]*4.
+        batch_size (int): Batch size for training. Default is 256.
+        num_iters (int): Number of iterations for training. Default is 10000.
+        lr_init (float): Initial learning rate. Default is 1e-4.
+        lr_min (float): Minimum learning rate. Default is 1e-4.
+        betas (Tuple[float, float]): Betas for the Adam optimizer. Default is (0.9, 0.999).
+        checkpoint_interval (int): Interval for saving checkpoints. Default is 100.
+        resume_from_checkpoint (bool): Whether to resume from a checkpoint. Default is False.
+        """
         reproducibility()
         self.eta_network_opt['input_size'] = self.p
         self.eta_network_opt['output_size'] = 1
@@ -327,9 +360,13 @@ class w1ot:
                   method: str = 'GAN') -> np.ndarray:
         """
         Transport the source data to the target data using the trained transport map.
-        :param source: data points in the source distribution
-        :param method: "grad_guidance" or "neural_transport"
-        :return: transported source data under wasserstein-1 optimal transport
+
+        Parameters:
+        source (np.ndarray): Data points in the source distribution.
+        method (str): Method to use for transport. Default is 'GAN'.
+
+        Returns:
+        np.ndarray: Transported source data under Wasserstein-1 optimal transport.
         """
         if method == 'GAN':
             return self._transport_GAN(source)
@@ -338,9 +375,13 @@ class w1ot:
     def _transport_GAN(self, source: np.ndarray) -> np.ndarray:
         """
         Transport the source data to the target data using the gradient guidance method.
-        The transported sample is computed as x - alpha(x) * grad(phi(x)). where alpha(x) is the distance function
-        :param source:
-        :return:
+        The transported sample is computed as x - eta(x) * grad(phi(x)), where eta(x) is the distance function.
+
+        Parameters:
+        source (np.ndarray): Data points in the source distribution.
+
+        Returns:
+        np.ndarray: Transported source data.
         """
         self.eta.eval()
         self.phi.eval()
@@ -367,8 +408,13 @@ class w1ot:
 
         return transported.cpu().detach().numpy()
 
-    def _save_model(self, path):
-        
+    def _save_model(self, path: str) -> None:
+        """
+        Save the model to the specified path.
+
+        Parameters:
+        path (str): Path to save the model.
+        """
         if not os.path.exists(path):
             os.makedirs(path)
 
@@ -443,20 +489,40 @@ class w1ot:
     def save(self, path):
         self._save_model(path)
 
-    def plot_2dpotential(self, resolution=100):
+    def plot_2dpotential(self, resolution: int = 100) -> None:
         """
         Plot the 2D potential map.
-        :param resolution: resolution of the plot
-        :return: None
+
+        This method visualizes the learned potential function in 2D space. It creates a contour plot
+        of the potential values over a grid of points, and overlays the source and target data points.
+
+        Parameters:
+        resolution (int): The number of points along each axis in the plot grid. Default is 100.
+
+        Returns:
+        None: This method doesn't return anything, it displays the plot.
+
+        Raises:
+        ValueError: If the input data is not 2-dimensional.
+        RuntimeError: If the phi network is not initialized.
+
+        Note:
+        This method requires matplotlib to be installed.
         """
         import numpy as np
         import matplotlib.pyplot as plt
 
-        # make the plot range is suitable with source data and target data
-        x_range = (min(self.dataset.source[:, 0].min(), self.dataset.target[:, 0].min())-0.1,
-                   max(self.dataset.source[:, 0].max(), self.dataset.target[:, 0].max())+0.1)
-        y_range = (min(self.dataset.source[:, 1].min(), self.dataset.target[:, 1].min()-0.1),
-                   max(self.dataset.source[:, 1].max(), self.dataset.target[:, 1].max())+0.1)
+        if self.dataset.p != 2:
+            raise ValueError("This method only works for 2D data.")
+
+        if self.phi is None:
+            raise RuntimeError("The potential function (phi) is not initialized. Train the model first.")
+
+        # Make the plot range suitable with source data and target data
+        x_range = (min(self.dataset.source[:, 0].min(), self.dataset.target[:, 0].min()) - 0.1,
+                   max(self.dataset.source[:, 0].max(), self.dataset.target[:, 0].max()) + 0.1)
+        y_range = (min(self.dataset.source[:, 1].min(), self.dataset.target[:, 1].min()) - 0.1,
+                   max(self.dataset.source[:, 1].max(), self.dataset.target[:, 1].max()) + 0.1)
 
         x = np.linspace(x_range[0], x_range[1], resolution)
         y = np.linspace(y_range[0], y_range[1], resolution)
@@ -481,9 +547,9 @@ class w1ot:
         plt.ylabel('Y')
 
         # Plot source and target points
-        plt.scatter(self.dataset.source[:, 0], self.dataset.source[:, 1], c='r', s=10,
+        plt.scatter(self.dataset.source[:, 0].cpu(), self.dataset.source[:, 1].cpu(), c='b', s=10,
                     label='Source')
-        plt.scatter(self.dataset.target[:, 0], self.dataset.target[:, 1], c='b', s=10,
+        plt.scatter(self.dataset.target[:, 0].cpu(), self.dataset.target[:, 1].cpu(), c='r', s=10,
                     label='Target')
         plt.legend(loc='upper right')
 
@@ -497,9 +563,20 @@ class w2ot:
                  target: np.ndarray = None,
                  positive: bool = False,
                  validation_size: float = 0.1,
-                 device = None,
-                 path = None,
-                 ):
+                 device: str = None,
+                 path: str = None,
+                 ) -> None:
+        """
+        Initialize the Wasserstein-2 optimal transport model.
+
+        Parameters:
+        source (np.ndarray): Data sampled from the source distribution.
+        target (np.ndarray): Data sampled from the target distribution.
+        positive (bool): Whether to use positive transport direction. Default is False.
+        validation_size (float): Validation size, between 0 and 1. Default is 0.1.
+        device (str): Computing device of PyTorch backend. Default is None.
+        path (str): Path to save the model. Default is None.
+        """
         if device is not None:
             self.device = torch.device(device)
         else:
@@ -547,7 +624,24 @@ class w2ot:
                                kernel_init: str = None,
                                resume_from_checkpoint: bool = False,
                                checkpoint_interval: int = 100,
-                               **kwargs):
+                               **kwargs) -> None:
+        """
+        Train the potential functions f and g.
+
+        Parameters:
+        flavor (str): Type of network architecture to use. Options: 'cellot', 'ot_icnn', 'custom'. Default is 'ot_icnn'.
+        hidden_sizes (List[int]): List of hidden layer sizes. Default is [64,64,64,64].
+        batch_size (int): Batch size for training. Default is 256.
+        num_iters (int): Number of training iterations. Default is 100000.
+        num_inner_iter (int): Number of inner iterations for g updates. Default is 10.
+        lr_init (float): Initial learning rate. Default is 1e-3.
+        lr_min (float): Minimum learning rate for scheduler. Default is 1e-4.
+        betas (Tuple[float, float]): Adam optimizer betas. Default is (0.5, 0.9).
+        kernel_init (str): Kernel initialization method. Default is None.
+        resume_from_checkpoint (bool): Whether to resume from checkpoint. Default is False.
+        checkpoint_interval (int): Interval for saving checkpoints. Default is 100.
+        **kwargs: Additional arguments.
+        """
 
         # Initialize the ICNN
         if flavor == 'cellot':
@@ -658,6 +752,16 @@ class w2ot:
         print("Training completed.")
 
     def transport(self, source: np.ndarray, reverse: bool = False) -> np.ndarray:
+        """
+        Transport source points using the trained transport map.
+
+        Parameters:
+        source (np.ndarray): Source points to transport.
+        reverse (bool): Whether to use reverse transport map. Default is False.
+
+        Returns:
+        np.ndarray: Transported points.
+        """
         source = torch.tensor(source, dtype=torch.float32, device=self.device).requires_grad_(True)
         if reverse:
             if self.positive:
@@ -704,9 +808,9 @@ class w2ot:
         plt.ylabel('Y')
 
         # Plot source and target points
-        plt.scatter(self.dataset.source[:, 0], self.dataset.source[:, 1], c='r', s=10,
+        plt.scatter(self.dataset.source[:, 0], self.dataset.source[:, 1], c='b', s=10,
                     label='Source')
-        plt.scatter(self.dataset.target[:, 0], self.dataset.target[:, 1], c='b', s=10,
+        plt.scatter(self.dataset.target[:, 0], self.dataset.target[:, 1], c='r', s=10,
                     label='Target')
         plt.legend(loc='upper right')
 

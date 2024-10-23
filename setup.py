@@ -11,11 +11,14 @@ setup(
     python_requires='>=3.10',
     platforms = 'any',
     install_requires = [
-	'scanpy',
+	    'scanpy',
         'torch',
         'numpy',
         'matplotlib',
         'tqdm',
         'scikit-learn',
     ],
+    extras_require = {
+        'experiments': ['ray==2.37.0'],
+    },
 )
