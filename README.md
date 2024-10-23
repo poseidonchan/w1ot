@@ -2,7 +2,7 @@
 
 ## Overview
 
-![W1OT Overview](./tree/main/Figures/fig1.png)
+![W1OT Overview](./Figures/fig1.png)
 
 
 ## Installation
