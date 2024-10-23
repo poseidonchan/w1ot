@@ -1,5 +1,4 @@
 import os
-import ot
 import anndata
 import numpy as np
 import pandas as pd
@@ -45,10 +44,6 @@ def metrics(transported, target, gene_list=None,data_space='X'):
     gammas = np.logspace(1, -3, num=50)
     mmd_dist = np.mean([mmd_distance(target_data, transported_data, g) for g in gammas])
 
-    # Wasserstein distance
-    cost_matrix = ot.dist(target_data, transported_data, metric='euclidean')
-    wasserstein_dist = ot.emd2(a=[], b=[], M=cost_matrix)
-
-    return r2, l2_dist, mmd_dist, wasserstein_dist
+    return r2, l2_dist, mmd_dist
 
 

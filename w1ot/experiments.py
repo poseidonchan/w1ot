@@ -69,14 +69,12 @@ class PerturbModel:
                 device=self.device, 
                 path=self.output_dir
             )
-            # try:
-            #     self.model.load(os.path.join(self.output_dir, "w1ot_networks.pt"))
-            #     print("Loaded existing trained model")
-            # except:
-            #     self.model.fit_potential_function(resume_from_checkpoint=True)
-            #     self.model.fit_distance_function(resume_from_checkpoint=True)
-            self.model.fit_potential_function(resume_from_checkpoint=False)
-            self.model.fit_distance_function(resume_from_checkpoint=False)
+            try:
+                self.model.load(os.path.join(self.output_dir, "w1ot_networks.pt"))
+                print("Loaded existing trained model")
+            except:
+                self.model.fit_potential_function(resume_from_checkpoint=True)
+                self.model.fit_distance_function(resume_from_checkpoint=True)
 
         elif self.model_name == 'w2ot':
             self.model = w2ot(
@@ -170,15 +168,15 @@ class PerturbModel:
                 print("Created new gene list")
         
         if self.model_name == 'identity':
-            cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics(source_adata, target_adata, gene_list=gene_list, data_space='X')
-            embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein = np.nan, np.nan, np.nan, np.nan
+            cell_r2, cell_l2, cell_mmd = metrics(source_adata, target_adata, gene_list=gene_list, data_space='X')
+            embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan, np.nan
 
-            return embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein
+            return embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd
         
         elif self.model_name == 'observed':
-            embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein = np.nan, np.nan, np.nan, np.nan
-            cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics(source_adata, target_adata, gene_list=gene_list, data_space='X')
-            return embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein
+            embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan, np.nan
+            cell_r2, cell_l2, cell_mmd = metrics(source_adata, target_adata, gene_list=gene_list, data_space='X')
+            return embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd
         
         else:
             
@@ -192,13 +190,13 @@ class PerturbModel:
                 target_adata.X = normalize_and_log_transform(target_adata.X)
 
             if self.embedding:
-                embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein = metrics(transported_adata, target_adata,  data_space='X_emb')
+                embedding_r2, embedding_l2, embedding_mmd = metrics(transported_adata, target_adata,  data_space='X_emb')
             else:
-                embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein = np.nan, np.nan, np.nan, np.nan
+                embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan, np.nan
 
-            cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics(transported_adata, target_adata, gene_list=gene_list, data_space='X')
+            cell_r2, cell_l2, cell_mmd = metrics(transported_adata, target_adata, gene_list=gene_list, data_space='X')
 
-            return embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein
+            return embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd
 
 
 
@@ -314,7 +312,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
 
                     elif model_name == 'identity':
                         pmodel = PerturbModel(
@@ -333,7 +331,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
                     
                     elif model_name == 'observed':
                         pmodel = PerturbModel(
@@ -352,7 +350,7 @@ def run_perturbation_task(
                             target_train_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
                     else:
                         pmodel = PerturbModel(
                             model_name=model_name,
@@ -371,8 +369,8 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
-                elif datasets_name in ['sciplex3-hvg-top250', 'sciplex3-hvg-top500', 'sciplex3-hvg-top1k']:
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                elif datasets_name in ['sciplex3-hvg-top1k']:
                     if model_name == 'scgen':
                         pmodel = PerturbModel(
                             model_name=model_name,
@@ -394,7 +392,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
 
                     elif model_name == 'identity':
                         pmodel = PerturbModel(
@@ -413,7 +411,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
                     
                     elif model_name == 'observed':
                         pmodel = PerturbModel(
@@ -432,7 +430,7 @@ def run_perturbation_task(
                             target_train_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
                     else:
                         pmodel = PerturbModel(
                             model_name=model_name,
@@ -451,7 +449,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
 
                 else:
                     if model_name == 'identity':
@@ -471,7 +469,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
                     
                     elif model_name == 'observed':
                         pmodel = PerturbModel(
@@ -490,7 +488,7 @@ def run_perturbation_task(
                             target_train_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
                     else:
                         pmodel = PerturbModel(
                             model_name=model_name,
@@ -509,7 +507,7 @@ def run_perturbation_task(
                             source_test_adata,
                             target_test_adata
                         )
-                        embedding_r2, embedding_l2, embedding_mmd, embedding_wasserstein, cell_r2, cell_l2, cell_mmd, cell_wasserstein = metrics
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
 
                 
 
@@ -521,7 +519,6 @@ def run_perturbation_task(
                     'cell_r2': cell_r2, 
                     'cell_l2': cell_l2,
                     'cell_mmd': cell_mmd,
-                    'cell_wasserstein': cell_wasserstein,
                 }
                 run_results.append(model_results)
 
