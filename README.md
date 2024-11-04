@@ -46,8 +46,6 @@ plot_2d_data(source, target, transported, False, 0.5)
 # transported = model.transport(source)
 ```
 
-
-
 ## Experiments
 
 To reproduce the experiments efficiently, we suggest you install the ***Ray (2.37.0)*** and configure your own Ray clusters. After that you can run the experiments codes in the Experiments folder.
@@ -59,8 +57,19 @@ python ./Experiments/4i.py
 
 If you do not have access to enough computation resources, the reproducing procedure could be very slow.
 
-
 ## Citation
+
+```bibtex
+@misc{chen2024fastscalablewasserstein1neural,
+      title={Fast and scalable Wasserstein-1 neural optimal transport solver for single-cell perturbation prediction}, 
+      author={Yanshuo Chen and Zhengmian Hu and Wei Chen and Heng Huang},
+      year={2024},
+      eprint={2411.00614},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2411.00614}, 
+}
+```
 
 
 ## Contact
