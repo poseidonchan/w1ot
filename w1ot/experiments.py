@@ -211,7 +211,7 @@ class PerturbModel:
             return embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd
         
         elif self.model_name == 'observed':
-            embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan, np.nan
+            embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan
             cell_r2, cell_l2, cell_mmd = metrics(source_adata, target_adata, gene_list=gene_list, data_space='X')
             return embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd
         
@@ -229,7 +229,7 @@ class PerturbModel:
             if self.embedding:
                 embedding_r2, embedding_l2, embedding_mmd = metrics(transported_adata, target_adata,  data_space='X_emb')
             else:
-                embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan, np.nan
+                embedding_r2, embedding_l2, embedding_mmd = np.nan, np.nan, np.nan
 
             cell_r2, cell_l2, cell_mmd = metrics(transported_adata, target_adata, gene_list=gene_list, data_space='X')
 
@@ -653,5 +653,452 @@ def run_iid_perturbation(
         tasks.append(task)
 
     return tasks
+
+@ray.remote(
+    num_cpus=2,
+    num_gpus=1,
+    max_retries=-1,        # Infinite retries for worker failures
+    memory=1.6e+10,
+)
+def run_ood_perturbation_task(
+    adata: ad.AnnData,
+    datasets_name: str,
+    output_dir: str,
+    perturbation_attribute: str,
+    ood_attribute: str,
+    device: str,
+    embedding: bool,
+    latent_dims: List[int],
+    num_run: int,
+    start_run: int,
+    perturbation: str
+):
+    """
+    Run an OOD perturbation task.
+
+    Parameters:
+    adata (AnnData): AnnData object containing the dataset.
+    datasets_name (str): Name of the dataset.
+    output_dir (str): Directory to save outputs.
+    perturbation_attribute (str): Attribute for perturbation.
+    ood_attribute (str): Attribute for out-of-distribution split (e.g., "celltype").
+    device (str): Device to be used for computation.
+    embedding (bool): Whether to use embedding.
+    latent_dims (List[int]): List of latent dimensions to consider.
+    num_run (int): Number of runs.
+    start_run (int): Starting run number.
+    perturbation (str): Perturbation to be applied.
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import anndata as ad
+
+    print(f"Running OOD task for {perturbation}")
+
+    for run in range(1, num_run + 1):
+        run_output_dir = os.path.join(
+            output_dir, ood_attribute, datasets_name, f"{perturbation}_{run + start_run}"
+        )
+        if not os.path.exists(run_output_dir):
+            os.makedirs(run_output_dir)
+
+        # Check if data split exists
+        if all(os.path.exists(os.path.join(run_output_dir, f'{split}.h5ad'))
+               for split in ['source_train', 'source_test', 'target_train', 'target_test']):
+            print(f"Loading existing data split for {perturbation}, run {run}")
+            source_train_adata = ad.read_h5ad(os.path.join(run_output_dir, 'source_train.h5ad'))
+            source_test_adata = ad.read_h5ad(os.path.join(run_output_dir, 'source_test.h5ad'))
+            target_train_adata = ad.read_h5ad(os.path.join(run_output_dir, 'target_train.h5ad'))
+            target_test_adata = ad.read_h5ad(os.path.join(run_output_dir, 'target_test.h5ad'))
+        else:
+            print(f"Creating new OOD data split for {perturbation}, run {run}")
+            
+            # Get unique values for the OOD attribute
+            ood_values = adata.obs[ood_attribute].unique()
+            
+            # Randomly select one OOD value for testing (e.g., one celltype)
+            np.random.seed(run + start_run)  # For reproducibility
+            test_ood_value = np.random.choice(ood_values, 1)[0]
+            
+            print(f"Selected '{test_ood_value}' for OOD testing")
+            
+            # Source train: control cells from non-test OOD values
+            source_train_mask = ((adata.obs[perturbation_attribute] == 'control') & 
+                                 (adata.obs[ood_attribute] != test_ood_value))
+            source_train_adata = adata[source_train_mask].copy()
+            
+            # Target train: perturbed cells from non-test OOD values
+            target_train_mask = ((adata.obs[perturbation_attribute] == perturbation) & 
+                                 (adata.obs[ood_attribute] != test_ood_value))
+            target_train_adata = adata[target_train_mask].copy()
+            
+            # Source test: control cells from the test OOD value
+            source_test_mask = ((adata.obs[perturbation_attribute] == 'control') & 
+                                (adata.obs[ood_attribute] == test_ood_value))
+            source_test_adata = adata[source_test_mask].copy()
+            
+            # Target test: perturbed cells from the test OOD value
+            target_test_mask = ((adata.obs[perturbation_attribute] == perturbation) & 
+                                (adata.obs[ood_attribute] == test_ood_value))
+            target_test_adata = adata[target_test_mask].copy()
+            
+            # Save the OOD value used for testing in the metadata
+            for split_adata in [source_train_adata, target_train_adata, source_test_adata, target_test_adata]:
+                split_adata.uns['ood_info'] = {
+                    'ood_attribute': ood_attribute,
+                    'test_ood_value': test_ood_value
+                }
+            
+            # Save the split data
+            source_train_adata.write(os.path.join(run_output_dir, 'source_train.h5ad'))
+            source_test_adata.write(os.path.join(run_output_dir, 'source_test.h5ad'))
+            target_train_adata.write(os.path.join(run_output_dir, 'target_train.h5ad'))
+            target_test_adata.write(os.path.join(run_output_dir, 'target_test.h5ad'))
+
+        # List to store results for this run
+        run_results = []
+
+        for latent_dim in latent_dims:
+            for model_name in ['scgen', 'w1ot', 'w2ot']:
+
+                model_output_dir = os.path.join(
+                    run_output_dir,
+                    f'saved_models',
+                    model_name
+                )
+
+                if not os.path.exists(model_output_dir):
+                    os.makedirs(model_output_dir)
+
+                # Initialize and train the model - similar to IID experiment
+                # The logic for each model type and dataset
+                if '4i' in datasets_name:
+                    if model_name == 'scgen':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=8,
+                            embedding=True,
+                            output_dir=model_output_dir,
+                            hidden_layers=[32, 32],
+                            num_iters=10000,
+                            device=device
+                        )
+
+                        pmodel.train()
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+
+                    elif model_name == 'identity':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                    
+                    elif model_name == 'observed':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            target_train_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                    else:
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        pmodel.train()
+
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                elif datasets_name in ['sciplex3-hvg-top1k']:
+                    if model_name == 'scgen':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=50,
+                            embedding=True,
+                            output_dir=model_output_dir,
+                            hidden_layers=[512, 512],
+                            num_iters=250000,
+                            device=device
+                        )
+
+                        pmodel.train()
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+
+                    elif model_name == 'identity':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                    
+                    elif model_name == 'observed':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            target_train_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                    else:
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        pmodel.train()
+
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+
+                else:
+                    # Default model configurations
+                    if model_name == 'identity':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                    
+                    elif model_name == 'observed':
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=False,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        # Evaluate the model
+                        metrics = pmodel.evaluate(
+                            target_train_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+                    else:
+                        pmodel = PerturbModel(
+                            model_name=model_name,
+                            source_adata=source_train_adata,
+                            target_adata=target_train_adata,
+                            perturbation_attribute=perturbation_attribute,
+                            latent_dim=latent_dim,
+                            embedding=embedding,
+                            output_dir=model_output_dir,
+                            device=device
+                        )
+
+                        pmodel.train()
+
+                        metrics = pmodel.evaluate(
+                            source_test_adata,
+                            target_test_adata
+                        )
+                        embedding_r2, embedding_l2, embedding_mmd, cell_r2, cell_l2, cell_mmd = metrics
+
+                # Save the results
+                model_results = {
+                    'model': model_name,
+                    'perturbation': perturbation,
+                    'latent_dim': latent_dim,
+                    'ood_attribute': ood_attribute,
+                    'test_ood_value': source_test_adata.uns['ood_info']['test_ood_value'],
+                    'cell_r2': cell_r2, 
+                    'cell_l2': cell_l2,
+                    'cell_mmd': cell_mmd,
+                }
+                run_results.append(model_results)
+
+        # Save the run results to a CSV file
+        results_df = pd.DataFrame(run_results)
+        results_df.to_csv(os.path.join(run_output_dir, 'results.csv'), index=False)
+    
+    print(f"Finished running OOD task for {perturbation}")
+
+
+def run_ood_perturbation(
+    dataset_path: str,
+    ood_attribute: str,
+    output_dir: str = './ood_experiments/',
+    perturbation_attribute: str = 'perturbation',
+    device: str = 'cuda',
+    embedding: bool = True,
+    latent_dims: List[int] = [50],
+    num_run: int = 5,
+    start_run: int = 0,
+) -> List:
+    """
+    Run OOD perturbation experiments.
+
+    Parameters:
+    dataset_path (str): Path to the dataset file.
+    ood_attribute (str): Attribute for out-of-distribution split (e.g., "celltype").
+    output_dir (str): Base directory to save outputs. Default is './ood_experiments/'.
+    perturbation_attribute (str): Attribute for perturbation. Default is 'perturbation'.
+    device (str): Device to be used for computation. Default is 'cuda'.
+    embedding (bool): Whether to use embedding. Default is True.
+    latent_dims (List[int]): List of latent dimensions to use. Default is [50].
+    num_run (int): Number of runs to perform. Default is 5.
+    start_run (int): Starting run index. Default is 0.
+
+    Returns:
+    List: List of tasks submitted to Ray.
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+    import anndata as ad
+
+    datasets_name = os.path.splitext(os.path.basename(dataset_path))[0]
+
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Read the dataset once and put it into Ray's object store
+    adata = ad.read_h5ad(dataset_path)
+    
+    # Check if the OOD attribute exists in the dataset
+    if ood_attribute not in adata.obs.columns:
+        raise ValueError(f"OOD attribute '{ood_attribute}' not found in the dataset.")
+    
+    # Verify we have multiple values for the OOD attribute
+    ood_values = adata.obs[ood_attribute].unique()
+    if len(ood_values) < 2:
+        raise ValueError(f"OOD attribute '{ood_attribute}' must have at least 2 unique values for OOD testing.")
+    
+    # Put adata in Ray's object store for distribution to tasks
+    adata_ref = ray.put(adata)
+
+    # Get unique perturbations, excluding 'control'
+    perturbations = [
+        p for p in adata.obs[perturbation_attribute].unique() if p != 'control'
+    ]
+    
+    # Handle specific dataset cases
+    if 'sciplex3-hvg' in datasets_name:
+        perturbations = ['belinostat', 'dacinostat', 'givinostat',
+                        'hesperadin', 'tanespimycin', 'jnj_26854165',
+                        'tak_901', 'flavopiridol_hcl', 'alvespimycin_hcl']
+    
+    # Submit tasks to Ray for each perturbation
+    tasks = []
+    for perturbation in perturbations:
+        print(f"Submitting OOD task for {perturbation} with OOD attribute '{ood_attribute}'")
+        task = run_ood_perturbation_task.remote(
+            adata_ref,
+            datasets_name,
+            output_dir,
+            perturbation_attribute,
+            ood_attribute,
+            device,
+            embedding,
+            latent_dims,
+            num_run,
+            start_run,
+            perturbation
+        )
+        tasks.append(task)
+
+    return tasks
+
+
 
     
