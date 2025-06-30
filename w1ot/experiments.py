@@ -129,7 +129,15 @@ class PerturbModel:
 
         else:
             raise ValueError(f"Unknown model name: {self.model_name}")
-
+    
+    def get_latent_representation(self, adata: AnnData) -> np.ndarray:
+        """
+        Get the latent representation of the data.
+        """
+        if self.embedding:
+            return self.embedding_model.get_latent_representation(adata)
+        else:
+            raise NotImplementedError("Latent representation is not supported for non-embedding models")
 
     def predict(self, 
                 source_adata: AnnData,
